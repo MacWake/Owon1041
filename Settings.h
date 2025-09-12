@@ -3,7 +3,6 @@
 
 #include <QSettings>
 #include <QString>
-#include <map> // Required for std::map in .cpp
 
 class Settings : public QSettings {
   Q_OBJECT
