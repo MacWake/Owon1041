@@ -11,6 +11,9 @@ if(APPLE)
     set(CMAKE_MACOSX_RPATH ON)
 endif()
 
+set(QT_NO_OPENGL ON)
+set(QT_DISABLE_OPENGL TRUE)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -37,14 +40,25 @@ foreach(QT_PATH ${QT_COMMON_PATHS})
     endif()
 endforeach()
 
-# Try to find Qt6 first, fall back to Qt5 if not found
+# Add these lines before find_package()
+set(QT_STATIC ON)
+set(BUILD_SHARED_LIBS OFF)
+
+# Optionally, for Qt6
+set(QT_STATIC_RUNTIME ON)
+
+# If using Qt5, you might need
+set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+
 set(QT_VERSION_MAJOR 6)
+
+# Modify find_package to include more components if needed
 find_package(Qt${QT_VERSION_MAJOR} COMPONENTS
     Core
     Gui
     Widgets
     SerialPort
-    QUIET
+        REQUIRED
 )
 
 # Define macOS bundle properties
@@ -81,11 +95,15 @@ add_executable(Owon1041
     ${PLATFORM_SPECIFIC_ICON_FILES}
 )
 
+# Update target_link_libraries to use static libraries
 target_link_libraries(Owon1041
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::Gui
     Qt${QT_VERSION_MAJOR}::Widgets
     Qt${QT_VERSION_MAJOR}::SerialPort
+        # Windows MinGW specific static libraries
+        $<$<AND:$<PLATFORM_ID:Windows>,$<CXX_COMPILER_ID:GNU>>:-static-libgcc>
+        $<$<AND:$<PLATFORM_ID:Windows>,$<CXX_COMPILER_ID:GNU>>:-static-libstdc++>
 )
 
 # Set platform-specific properties
@@ -145,3 +163,8 @@ elseif(UNIX AND NOT APPLE)
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps
     )
 endif()
+
+# Add these definitions to handle static Qt
+target_compile_definitions(Owon1041 PRIVATE
+        QT_STATIC_BUILD
+)
