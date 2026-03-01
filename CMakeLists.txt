@@ -161,10 +161,12 @@ elseif(UNIX AND NOT APPLE)
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/256x256/apps
     )
     
-    # Install SVG icon
-    install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/linux/icons/scalable/owon1041.svg
-        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps
-    )
+    # Install SVG icon (if exists)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/linux/icons/scalable/owon1041.svg")
+        install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/linux/icons/scalable/owon1041.svg
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps
+        )
+    endif()
 elseif(WIN32)
     # Installation paths for Windows
     include(GNUInstallDirs)
