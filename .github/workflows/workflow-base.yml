@@ -41,6 +41,10 @@ jobs:
             generator: "Unix Makefiles"
     
     container: ${{ matrix.container }}
+    
+    env:
+      APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
         
     steps:
       - uses: actions/checkout@v4
@@ -85,10 +89,10 @@ jobs:
 
       # macOS code signing setup
       - name: Import Code-Signing Certificates
-        if: matrix.os == 'macos-latest' && secrets.APPLE_CERTIFICATE_BASE64 != ''
+        if: matrix.os == 'macos-latest' && env.APPLE_CERTIFICATE_BASE64 != ''
         uses: Apple-Actions/import-codesign-certs@v2
         with:
-          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          p12-file-base64: ${{ env.APPLE_CERTIFICATE_BASE64 }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           keychain-password: ${{ github.run_id }}
           
@@ -123,9 +127,9 @@ jobs:
 
       # macOS notarization
       - name: Notarize the macOS application
-        if: matrix.os == 'macos-latest' && secrets.APPLE_ID != ''
+        if: matrix.os == 'macos-latest' && env.APPLE_ID != ''
         env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID: ${{ env.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
         run: |
           ditto -c -k --keepParent "${{github.workspace}}/build/Owon1041.app" "${{github.workspace}}/build/Owon1041.zip"
