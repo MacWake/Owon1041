@@ -86,7 +86,7 @@ jobs:
         run: |
           QT_SERIALPORT="libqt6serialport6-dev"
           if [[ "${{ matrix.os }}" == "debian-trixie" ]]; then
-            QT_SERIALPORT="libqt6serialport-dev"
+            QT_SERIALPORT="qt6-serialport-dev"
           fi
           
           if command -v sudo > /dev/null; then
