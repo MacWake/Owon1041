@@ -1,0 +1,203 @@
+name: Reusable Build and Package
+
+on:
+  workflow_call:
+    inputs:
+      build_type:
+        required: false
+        type: string
+        default: 'Release'
+      artifact_name_prefix:
+        required: false
+        type: string
+        default: 'artifacts'
+    secrets:
+      APPLE_CERTIFICATE_BASE64:
+        required: false
+      APPLE_CERTIFICATE_PASSWORD:
+        required: false
+      APPLE_ID:
+        required: false
+      APPLE_ID_PASSWORD:
+        required: false
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest, debian-trixie]
+        include:
+          - os: windows-latest
+            runner: windows-latest
+            generator: "Visual Studio 17 2022"
+          - os: ubuntu-22.04
+            runner: ubuntu-22.04
+            generator: "Unix Makefiles"
+          - os: debian-trixie
+            runner: ubuntu-latest
+            generator: "Unix Makefiles"
+            container: "debian:trixie"
+          - os: macos-latest
+            runner: macos-latest
+            generator: "Unix Makefiles"
+    
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    
+    env:
+      APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+        
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      # Extract version
+      - name: Get version
+        id: get_version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            echo "VERSION=0.0.0-PR${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=0.0.0-build${{ github.run_number }}" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
+      
+      # Install Qt for Windows and macOS
+      - name: Install Qt (Win/Mac)
+        if: runner.os != 'Linux'
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.8.2'
+          host: ${{ matrix.os == 'windows-latest' && 'windows' || 'mac' }}
+          target: 'desktop'
+          arch: ${{ matrix.os == 'windows-latest' && 'win64_msvc2022_64' || 'clang_64' }}
+          modules: 'qtserialport'
+          setup-python: true
+
+      # Install Linux dependencies including Qt
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          QT_SERIALPORT="libqt6serialport6-dev"
+          if [[ "${{ matrix.os }}" == "debian-trixie" ]]; then
+            QT_SERIALPORT="qt6-serialport-dev"
+          fi
+          
+          if command -v sudo > /dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y \
+              qt6-base-dev \
+              $QT_SERIALPORT \
+              libgl1-mesa-dev \
+              libxkbcommon-x11-0 \
+              libicu-dev \
+              libdouble-conversion-dev \
+              libpcre2-16-0 \
+              build-essential \
+              cmake \
+              ninja-build
+          else
+            apt-get update
+            apt-get install -y \
+              qt6-base-dev \
+              $QT_SERIALPORT \
+              libgl1-mesa-dev \
+              libxkbcommon-x11-0 \
+              libicu-dev \
+              libdouble-conversion-dev \
+              libpcre2-16-0 \
+              build-essential \
+              cmake \
+              ninja-build
+          fi
+
+      # macOS code signing setup
+      - name: Import Code-Signing Certificates
+        if: matrix.os == 'macos-latest' && env.APPLE_CERTIFICATE_BASE64 != ''
+        uses: Apple-Actions/import-codesign-certs@v2
+        with:
+          p12-file-base64: ${{ env.APPLE_CERTIFICATE_BASE64 }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          keychain-password: ${{ github.run_id }}
+          
+      - name: Configure CMake
+        run: >
+          cmake -B ${{github.workspace}}/build 
+          -G "${{matrix.generator}}" 
+          -DCMAKE_BUILD_TYPE=${{inputs.build_type}}
+          -DCMAKE_PREFIX_PATH=${{runner.os == 'Linux' && '/usr/lib/x86_64-linux-gnu/cmake/Qt6' || env.Qt6_DIR}}
+          -DAPP_VERSION=${{ steps.get_version.outputs.VERSION }}
+          ${{ matrix.os == 'macos-latest' && '-DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"' || '' }}
+
+      - name: Build
+        run: cmake --build ${{github.workspace}}/build --config ${{inputs.build_type}}
+
+      # Deploy and sign Qt components (macOS)
+      - name: Deploy and Sign Qt dependencies
+        if: matrix.os == 'macos-latest'
+        run: |
+          # Fix case sensitivity issue if needed
+          if [ -d "${{github.workspace}}/build/owon1041.app" ] && [ ! -d "${{github.workspace}}/build/Owon1041.app" ]; then
+            mv "${{github.workspace}}/build/owon1041.app" "${{github.workspace}}/build/Owon1041.app"
+          fi
+          
+          # Deploy and sign
+          SIGN_ARG=""
+          if [[ "${{ vars.APPLE_SIGNING_ID }}" != "" ]]; then
+            SIGN_ARG="-sign-for-notarization=\"Developer ID Application: ${{ vars.APPLE_SIGNING_ID }}\""
+          fi
+          
+          eval macdeployqt "${{github.workspace}}/build/Owon1041.app" -always-overwrite -verbose=3 $SIGN_ARG
+
+      # macOS notarization
+      - name: Notarize the macOS application
+        if: matrix.os == 'macos-latest' && env.APPLE_ID != ''
+        env:
+          APPLE_ID: ${{ env.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+        run: |
+          ditto -c -k --keepParent "${{github.workspace}}/build/Owon1041.app" "${{github.workspace}}/build/Owon1041.zip"
+          xcrun notarytool submit "${{github.workspace}}/build/Owon1041.zip" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "${{ vars.APPLE_TEAM_ID }}" \
+            --wait
+          xcrun stapler staple "${{github.workspace}}/build/Owon1041.app"
+      
+      # Create packages
+      - name: Create macOS package
+        if: matrix.os == 'macos-latest'
+        run: |
+          hdiutil create -volname "Owon1041" -srcfolder "${{github.workspace}}/build/Owon1041.app" -ov -format UDZO "${{github.workspace}}/build/Owon1041-${{ steps.get_version.outputs.VERSION }}.dmg"
+      
+      - name: Create Windows installer
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          & "$env:Qt6_DIR\bin\windeployqt.exe" --release --no-translations --no-opengl-sw --no-system-d3d-compiler "${{github.workspace}}\build\Release\Owon1041.exe"
+          cd ${{github.workspace}}/build
+          cpack -G WIX -C ${{inputs.build_type}}
+      
+      - name: Create Linux package
+        if: runner.os == 'Linux'
+        run: |
+          cd ${{github.workspace}}/build
+          cpack -G DEB
+      
+      # Upload artifacts
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name_prefix }}-${{ matrix.os }}
+          path: |
+            ${{ github.workspace }}/build/*.dmg
+            ${{ github.workspace }}/build/*.msi
+            ${{ github.workspace }}/build/*.deb
+          if-no-files-found: error
