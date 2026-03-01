@@ -24,22 +24,26 @@ on:
 jobs:
   build:
     name: Build on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, debian-trixie, macos-latest, windows-latest]
+        os: [ubuntu-22.04, macos-latest, windows-latest, debian-trixie]
         include:
           - os: windows-latest
+            runner: windows-latest
             generator: "Visual Studio 17 2022"
           - os: ubuntu-22.04
+            runner: ubuntu-22.04
             generator: "Unix Makefiles"
           - os: debian-trixie
+            runner: ubuntu-latest
             generator: "Unix Makefiles"
             container: "debian:trixie"
           - os: macos-latest
+            runner: macos-latest
             generator: "Unix Makefiles"
     
+    runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
     
     env:
@@ -64,27 +68,48 @@ jobs:
           fi
         shell: bash
       
-      # Install Qt for all platforms
-      - name: Install Qt
+      # Install Qt for Windows and macOS
+      - name: Install Qt (Win/Mac)
+        if: runner.os != 'Linux'
         uses: jurplel/install-qt-action@v3
         with:
           version: '6.8.2'
-          host: ${{ matrix.os == 'windows-latest' && 'windows' || matrix.os == 'macos-latest' && 'mac' || 'linux' }}
+          host: ${{ matrix.os == 'windows-latest' && 'windows' || 'mac' }}
           target: 'desktop'
-          arch: ${{ matrix.os == 'windows-latest' && 'win64_msvc2022_64' || matrix.os == 'macos-latest' && 'clang_64' || 'gcc_64' }}
+          arch: ${{ matrix.os == 'windows-latest' && 'win64_msvc2022_64' || 'clang_64' }}
           modules: 'qtserialport'
           setup-python: true
 
-      # Install additional Linux dependencies if needed
-      - name: Install additional Linux dependencies
+      # Install Linux dependencies including Qt
+      - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
           if command -v sudo > /dev/null; then
             sudo apt-get update
-            sudo apt-get install -y libgl1-mesa-dev libxkbcommon-x11-0 libicu-dev libdouble-conversion-dev libpcre2-16-0
+            sudo apt-get install -y \
+              qt6-base-dev \
+              libqt6serialport6-dev \
+              libgl1-mesa-dev \
+              libxkbcommon-x11-0 \
+              libicu-dev \
+              libdouble-conversion-dev \
+              libpcre2-16-0 \
+              build-essential \
+              cmake \
+              ninja-build
           else
             apt-get update
-            apt-get install -y libgl1-mesa-dev libxkbcommon-x11-0 libicu-dev libdouble-conversion-dev libpcre2-16-0
+            apt-get install -y \
+              qt6-base-dev \
+              libqt6serialport6-dev \
+              libgl1-mesa-dev \
+              libxkbcommon-x11-0 \
+              libicu-dev \
+              libdouble-conversion-dev \
+              libpcre2-16-0 \
+              build-essential \
+              cmake \
+              ninja-build
           fi
 
       # macOS code signing setup
@@ -101,7 +126,7 @@ jobs:
           cmake -B ${{github.workspace}}/build 
           -G "${{matrix.generator}}" 
           -DCMAKE_BUILD_TYPE=${{inputs.build_type}}
-          -DCMAKE_PREFIX_PATH=${{env.Qt6_DIR}}
+          -DCMAKE_PREFIX_PATH=${{runner.os == 'Linux' && '/usr/lib/x86_64-linux-gnu/cmake/Qt6' || env.Qt6_DIR}}
           -DAPP_VERSION=${{ steps.get_version.outputs.VERSION }}
           ${{ matrix.os == 'macos-latest' && '-DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"' || '' }}
 
