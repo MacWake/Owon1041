@@ -83,6 +83,7 @@ jobs:
       # Install Linux dependencies including Qt
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
+        shell: bash
         run: |
           QT_SERIALPORT="libqt6serialport6-dev"
           if [[ "${{ matrix.os }}" == "debian-trixie" ]]; then
