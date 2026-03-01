@@ -68,10 +68,10 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v3
         with:
-          version: '6.10.2'
+          version: '6.8.2'
           host: ${{ matrix.os == 'windows-latest' && 'windows' || matrix.os == 'macos-latest' && 'mac' || 'linux' }}
           target: 'desktop'
-          arch: ${{ matrix.os == 'windows-latest' && 'win64_msvc2019_64' || matrix.os == 'macos-latest' && 'clang_64' || 'gcc_64' }}
+          arch: ${{ matrix.os == 'windows-latest' && 'win64_msvc2022_64' || matrix.os == 'macos-latest' && 'clang_64' || 'gcc_64' }}
           modules: 'qtserialport'
           setup-python: true
 

@@ -2,9 +2,19 @@ cmake_minimum_required(VERSION 3.16)
 
 # Set version from variable if provided, otherwise use default
 if(APP_VERSION)
-    project(Owon1041 VERSION ${APP_VERSION} LANGUAGES CXX)
+    # CMake project() VERSION must be numeric (major.minor.patch[.tweak])
+    # Extract the numeric part (e.g., 0.0.0 from 0.0.0-PR6)
+    string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" APP_VERSION_NUMERIC "${APP_VERSION}")
+    if(APP_VERSION_NUMERIC)
+        project(Owon1041 VERSION ${APP_VERSION_NUMERIC} LANGUAGES CXX)
+    else()
+        project(Owon1041 VERSION 1.0.0 LANGUAGES CXX)
+    endif()
+    # Keep the full version for later use (packaging, etc.)
+    set(FULL_APP_VERSION ${APP_VERSION})
 else()
     project(Owon1041 VERSION 1.0.0 LANGUAGES CXX)
+    set(FULL_APP_VERSION "1.0.0")
 endif()
 
 # Add this near the top, after your project() declaration
@@ -30,6 +40,7 @@ set(QT_COMMON_PATHS
     "/usr/local/opt/qt@6"
     "/usr/local/opt/qt6"
     "/usr/local/qt6"
+    "C:/Qt/6.8.2/msvc2022_64"
     "C:/Qt/6.5.0/msvc2019_64"
     "C:/Qt/6.5.0/mingw_64"
 )
@@ -165,9 +176,7 @@ endif()
 # CPack configuration
 set(CPACK_PACKAGE_NAME "Owon1041")
 set(CPACK_PACKAGE_VENDOR "MacWake")
-set(CPACK_PACKAGE_VERSION_MAJOR "${PROJECT_VERSION_MAJOR}")
-set(CPACK_PACKAGE_VERSION_MINOR "${PROJECT_VERSION_MINOR}")
-set(CPACK_PACKAGE_VERSION_PATCH "${PROJECT_VERSION_PATCH}")
+set(CPACK_PACKAGE_VERSION "${FULL_APP_VERSION}")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OWON XDM-1041 Multimeter Interface")
 set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_SOURCE_DIR}/doc/README.md")
 
