@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
-project(Owon1041 VERSION 1.0.0 LANGUAGES CXX)
+
+# Set version from variable if provided, otherwise use default
+if(APP_VERSION)
+    project(Owon1041 VERSION ${APP_VERSION} LANGUAGES CXX)
+else()
+    project(Owon1041 VERSION 1.0.0 LANGUAGES CXX)
+endif()
 
 # Add this near the top, after your project() declaration
 if(APPLE)
@@ -64,6 +70,10 @@ if(APPLE)
     set_source_files_properties(${APP_ICON_MACOSX} PROPERTIES
         MACOSX_PACKAGE_LOCATION "Resources")
     set(PLATFORM_SPECIFIC_ICON_FILES ${APP_ICON_MACOSX})
+elseif(WIN32)
+    # Windows icon (requires a resource file)
+    set(APP_ICON_WINDOWS "${CMAKE_CURRENT_SOURCE_DIR}/Owon1041.rc")
+    set(PLATFORM_SPECIFIC_ICON_FILES ${APP_ICON_WINDOWS})
 elseif(UNIX AND NOT APPLE)
     # Linux doesn't use resource files in the executable directly
     set(PLATFORM_SPECIFIC_ICON_FILES "")
@@ -144,4 +154,39 @@ elseif(UNIX AND NOT APPLE)
     install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/linux/icons/scalable/owon1041.svg
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps
     )
+elseif(WIN32)
+    # Installation paths for Windows
+    include(GNUInstallDirs)
+    install(TARGETS Owon1041
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
 endif()
+
+# CPack configuration
+set(CPACK_PACKAGE_NAME "Owon1041")
+set(CPACK_PACKAGE_VENDOR "MacWake")
+set(CPACK_PACKAGE_VERSION_MAJOR "${PROJECT_VERSION_MAJOR}")
+set(CPACK_PACKAGE_VERSION_MINOR "${PROJECT_VERSION_MINOR}")
+set(CPACK_PACKAGE_VERSION_PATCH "${PROJECT_VERSION_PATCH}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OWON XDM-1041 Multimeter Interface")
+set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_SOURCE_DIR}/doc/README.md")
+
+if(WIN32)
+    set(CPACK_GENERATOR "WIX")
+    set(CPACK_WIX_UPGRADE_GUID "D9A1C5B0-1234-5678-90AB-CDEF12345678") # Generate a real one if needed
+    set(CPACK_WIX_PRODUCT_ICON "${CMAKE_CURRENT_SOURCE_DIR}/Owon1041.ico")
+    set(CPACK_PACKAGE_INSTALL_DIRECTORY "Owon1041")
+    # Start menu entry
+    set(CPACK_PACKAGE_EXECUTABLES "Owon1041" "Owon1041")
+    set(CPACK_CREATE_DESKTOP_LINKS "Owon1041")
+    set(CPACK_WIX_PROGRAM_MENU_FOLDER "Owon1041")
+elseif(UNIX AND NOT APPLE)
+    set(CPACK_GENERATOR "DEB")
+    set(CPACK_DEBIAN_PACKAGE_MAINTAINER "MacWake <info@macwake.de>")
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6widgets6, libqt6serialport6, libqt6gui6, libqt6core6")
+    # For distinct Debian/Ubuntu packages, we might need to adjust dependencies or names in GHA
+    set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
+    set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+endif()
+
+include(CPack)

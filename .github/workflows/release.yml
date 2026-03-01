@@ -3,207 +3,37 @@ name: Create Release
 on:
   push:
     tags:
-      - 'v*.*.*'  # Will trigger on tags like v1.0.0, v2.1.3, etc.
+      - 'v*.*.*'
 
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-22.04, macos-latest, windows-latest]
-        build_type: [ Release ]
-        include:
-          - os: windows-latest
-            generator: "Visual Studio 17 2022"
-          - os: ubuntu-22.04
-            generator: "Unix Makefiles"
-          - os: macos-latest
-            generator: "Unix Makefiles"
-        
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      
-      # Extract version from tag
-      - name: Extract version from tag
-        id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-        shell: bash
-      
-      # Install Qt for all platforms
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v3
-        with:
-          version: '6.5.0'
-          host: ${{ matrix.os == 'windows-latest' && 'windows' || matrix.os == 'macos-latest' && 'mac' || 'linux' }}
-          target: 'desktop'
-          arch: ${{ matrix.os == 'windows-latest' && 'win64_msvc2019_64' || matrix.os == 'macos-latest' && 'clang_64' || 'gcc_64' }}
-          modules: 'qtserialport'
-          setup-python: true
-
-      # Install additional Linux dependencies if needed
-      - name: Install additional Linux dependencies
-        if: matrix.os == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgl1-mesa-dev libxkbcommon-x11-0
-
-      # macOS code signing setup
-      - name: Import Code-Signing Certificates
-        if: matrix.os == 'macos-latest'
-        uses: Apple-Actions/import-codesign-certs@v2
-        with:
-          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          keychain-password: ${{ github.run_id }}
-          
-      - name: Configure CMake
-        run: >
-          cmake -B ${{github.workspace}}/build 
-          -G "${{matrix.generator}}" 
-          -DCMAKE_BUILD_TYPE=${{matrix.build_type}}
-          -DCMAKE_PREFIX_PATH=${{env.Qt6_DIR}}
-          ${{ matrix.os == 'macos-latest' && '-DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"' || '' }}
-
-      - name: Build
-        run: cmake --build ${{github.workspace}}/build --config ${{matrix.build_type}}
-
-      # Deploy and sign Qt components in one step (preferred method)
-      - name: Deploy and Sign Qt dependencies
-        if: matrix.os == 'macos-latest'
-        run: |
-          echo "Deploying and signing Qt frameworks to app bundle"
-          echo "Qt directory: $Qt6_DIR"
-          ls -la "${{github.workspace}}/build/"
-          
-          # Fix case sensitivity issue if needed
-          if [ -d "${{github.workspace}}/build/owon1041.app" ] && [ ! -d "${{github.workspace}}/build/Owon1041.app" ]; then
-            echo "Renaming app bundle for consistency"
-            mv "${{github.workspace}}/build/owon1041.app" "${{github.workspace}}/build/Owon1041.app"
-          fi
-          
-          # Deploy and sign
-          macdeployqt "${{github.workspace}}/build/Owon1041.app" -always-overwrite -verbose=3 -sign-for-notarization="Developer ID Application: ${{ vars.APPLE_SIGNING_ID }}"
-          
-          # Verify deployment
-          echo "Verifying deployment:"
-          ls -la "${{github.workspace}}/build/Owon1041.app/Contents/Frameworks/"
-          ls -la "${{github.workspace}}/build/Owon1041.app/Contents/PlugIns/"
-          otool -L "${{github.workspace}}/build/Owon1041.app/Contents/MacOS/Owon1041"
-
-      # If the one-step approach above fails, uncomment this block:
-      # - name: Sign individual components manually
-      #   if: matrix.os == 'macos-latest'
-      #   run: |
-      #     echo "Signing all Qt frameworks and plugins in the app bundle"
-      #     # Sign frameworks
-      #     find "${{github.workspace}}/build/Owon1041.app/Contents/Frameworks" -type f -name "*.framework" -o -name "*.dylib" | while read -r file; do
-      #       echo "Signing $file"
-      #       /usr/bin/codesign --force --options runtime --sign "Developer ID Application: ${{ vars.APPLE_SIGNING_ID }}" --verbose "$file"
-      #     done
-      #     
-      #     # Sign plugins
-      #     find "${{github.workspace}}/build/Owon1041.app/Contents/PlugIns" -type f -name "*.dylib" | while read -r file; do
-      #       echo "Signing $file"
-      #       /usr/bin/codesign --force --options runtime --sign "Developer ID Application: ${{ vars.APPLE_SIGNING_ID }}" --verbose "$file"
-      #     done
-      #
-      #   # Then sign the main app bundle
-      #   - name: Sign the macOS application
-      #     if: matrix.os == 'macos-latest'
-      #     run: |
-      #       echo "Signing with Developer ID Application: ${{ vars.APPLE_SIGNING_ID }}"
-      #       /usr/bin/codesign --force --options runtime --sign "Developer ID Application: ${{ vars.APPLE_SIGNING_ID }}" --verbose "${{github.workspace}}/build/Owon1041.app"
-
-      # macOS notarization
-      - name: Notarize the macOS application
-        if: matrix.os == 'macos-latest'
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
-        run: |
-          # Create a ZIP archive of the app
-          ditto -c -k --keepParent "${{github.workspace}}/build/Owon1041.app" "${{github.workspace}}/build/Owon1041.zip"
-          
-          # Notarize the app
-          xcrun notarytool submit "${{github.workspace}}/build/Owon1041.zip" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_ID_PASSWORD" \
-            --team-id "${{ vars.APPLE_TEAM_ID }}" \
-            --wait
-          
-          # Staple the notarization ticket
-          xcrun stapler staple "${{github.workspace}}/build/Owon1041.app"
-      
-      # Create release packages
-      - name: Create macOS package
-        if: matrix.os == 'macos-latest'
-        run: |
-          # Create a DMG
-          hdiutil create -volname "Owon1041" -srcfolder "${{github.workspace}}/build/Owon1041.app" -ov -format UDZO "${{github.workspace}}/build/Owon1041-${{ steps.get_version.outputs.VERSION }}.dmg"
-      
-      - name: Create Windows installer
-        if: matrix.os == 'windows-latest'
-        run: |
-          # Fix case sensitivity if needed
-          if (Test-Path "${{github.workspace}}\build\Release\owon1041.exe" -PathType Leaf) {
-            echo "Using lowercase executable name"
-            7z a -tzip "${{github.workspace}}\build\Owon1041-${{ steps.get_version.outputs.VERSION }}-Windows.zip" "${{github.workspace}}\build\Release\owon1041.exe"
-          } else {
-            echo "Using uppercase executable name"
-            7z a -tzip "${{github.workspace}}\build\Owon1041-${{ steps.get_version.outputs.VERSION }}-Windows.zip" "${{github.workspace}}\build\Release\Owon1041.exe"
-          }
-      
-      - name: Create Linux package
-        if: matrix.os == 'ubuntu-22.04'
-        run: |
-          # Check executable name capitalization
-          if [ -f "${{github.workspace}}/build/owon1041" ]; then
-            tar -czvf "${{github.workspace}}/build/Owon1041-${{ steps.get_version.outputs.VERSION }}-Linux.tar.gz" -C "${{github.workspace}}/build" owon1041
-          else
-            tar -czvf "${{github.workspace}}/build/Owon1041-${{ steps.get_version.outputs.VERSION }}-Linux.tar.gz" -C "${{github.workspace}}/build" Owon1041
-          fi
-      
-      # Upload artifacts
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-artifacts-${{ matrix.os }}
-          path: |
-            ${{ matrix.os == 'macos-latest' && github.workspace }}/build/*.dmg
-            ${{ matrix.os == 'windows-latest' && github.workspace }}/build/*.zip
-            ${{ matrix.os == 'ubuntu-22.04' && github.workspace }}/build/*.tar.gz
-          if-no-files-found: error
+    uses: ./.github/workflows/workflow-base.yml
+    with:
+      artifact_name_prefix: release-artifacts
+    secrets:
+      APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
 
   release:
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # Add this to ensure the workflow has permission to create releases
+      contents: write
     steps:
       - uses: actions/checkout@v4
       
-      # Extract version from tag
       - name: Extract version from tag
         id: get_version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
         
-      # Download all artifacts
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
       
-      # Debug step to see what files are available
-      - name: List downloaded artifacts
-        run: |
-          echo "Listing all downloaded artifacts:"
-          find artifacts -type f | sort
-          
-      # Create release
       - name: Create Release
-        id: create_release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ steps.get_version.outputs.VERSION }}
@@ -213,7 +43,7 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/**/*.dmg
-            artifacts/**/*.zip
-            artifacts/**/*.tar.gz
+            artifacts/**/*.msi
+            artifacts/**/*.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
