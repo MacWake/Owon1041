@@ -2,8 +2,10 @@ name: Create Release
 
 on:
   push:
+    branches: [ main ]
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -24,9 +26,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Extract version from tag
+      - name: Get version
         id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        shell: bash
+        run: |
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+            echo "IS_TAG=true" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=latest" >> $GITHUB_OUTPUT
+            echo "IS_TAG=false" >> $GITHUB_OUTPUT
+          fi
         
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -36,10 +46,10 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ steps.get_version.outputs.VERSION }}
-          name: Owon1041 v${{ steps.get_version.outputs.VERSION }}
+          tag_name: ${{ steps.get_version.outputs.IS_TAG == 'true' && format('v{0}', steps.get_version.outputs.VERSION) || 'latest' }}
+          name: ${{ steps.get_version.outputs.IS_TAG == 'true' && format('Owon1041 v{0}', steps.get_version.outputs.VERSION) || 'Latest Build (main)' }}
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.get_version.outputs.IS_TAG != 'true' }}
           generate_release_notes: true
           files: |
             artifacts/**/*.dmg
