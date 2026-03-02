@@ -60,12 +60,22 @@ jobs:
         id: get_version
         run: |
           if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+            VERSION_STR="${GITHUB_REF#refs/tags/v}"
           elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
-            echo "VERSION=0.0.0-PR${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+            VERSION_STR="0.0.0-PR${{ github.event.pull_request.number }}"
           else
-            echo "VERSION=0.0.0-build${{ github.run_number }}" >> $GITHUB_OUTPUT
+            VERSION_STR="0.0.0-build${{ github.run_number }}"
           fi
+          echo "VERSION=$VERSION_STR" >> $GITHUB_OUTPUT
+          
+          # Platform-specific suffix for Linux to avoid filename collisions
+          SUFFIX=""
+          if [[ "${{ matrix.os }}" == "ubuntu-22.04" ]]; then
+            SUFFIX="-ubuntu22"
+          elif [[ "${{ matrix.os }}" == "debian-trixie" ]]; then
+            SUFFIX="-debian-trixie"
+          fi
+          echo "SUFFIX=$SUFFIX" >> $GITHUB_OUTPUT
         shell: bash
       
       # Install Qt for Windows and macOS
@@ -175,21 +185,31 @@ jobs:
       - name: Create macOS package
         if: matrix.os == 'macos-latest'
         run: |
-          hdiutil create -volname "Owon1041" -srcfolder "${{github.workspace}}/build/Owon1041.app" -ov -format UDZO "${{github.workspace}}/build/Owon1041-${{ steps.get_version.outputs.VERSION }}.dmg"
+          hdiutil create -volname "Owon1041" -srcfolder "${{github.workspace}}/build/Owon1041.app" -ov -format UDZO "${{github.workspace}}/build/Owon1041-${{ steps.get_version.outputs.VERSION }}${{ steps.get_version.outputs.SUFFIX }}.dmg"
       
       - name: Create Windows installer
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          & "$env:Qt6_DIR\bin\windeployqt.exe" --release --no-translations --no-opengl-sw --no-system-d3d-compiler "${{github.workspace}}\build\Release\Owon1041.exe"
+          $env:PATH = "$env:Qt6_DIR\bin;$env:PATH"
+          & "windeployqt.exe" --release --no-translations --no-opengl-sw --no-system-d3d-compiler "${{github.workspace}}\build\Release\Owon1041.exe"
           cd ${{github.workspace}}/build
           cpack -G WIX -C ${{inputs.build_type}}
+          $msi = Get-ChildItem -Filter *.msi | Select-Object -First 1
+          if ($msi) {
+            $newName = "Owon1041-${{ steps.get_version.outputs.VERSION }}${{ steps.get_version.outputs.SUFFIX }}.msi"
+            Move-Item $msi.FullName $newName
+          }
       
       - name: Create Linux package
         if: runner.os == 'Linux'
         run: |
           cd ${{github.workspace}}/build
           cpack -G DEB
+          deb=$(ls *.deb | head -n 1)
+          if [ -n "$deb" ]; then
+            mv "$deb" "Owon1041-${{ steps.get_version.outputs.VERSION }}${{ steps.get_version.outputs.SUFFIX }}.deb"
+          fi
       
       # Upload artifacts
       - name: Upload artifacts
