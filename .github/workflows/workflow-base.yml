@@ -11,6 +11,10 @@ on:
         required: false
         type: string
         default: 'artifacts'
+      app_version:
+        required: false
+        type: string
+        default: ''
     secrets:
       APPLE_CERTIFICATE_BASE64:
         required: false
@@ -59,7 +63,9 @@ jobs:
       - name: Get version
         id: get_version
         run: |
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+          if [[ "${{ inputs.app_version }}" != "" ]]; then
+            VERSION_STR="${{ inputs.app_version }}"
+          elif [[ $GITHUB_REF == refs/tags/v* ]]; then
             VERSION_STR="${GITHUB_REF#refs/tags/v}"
           elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             VERSION_STR="0.0.0-PR${{ github.event.pull_request.number }}"

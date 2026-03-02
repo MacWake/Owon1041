@@ -3,57 +3,60 @@ name: Create Release
 on:
   push:
     branches: [ main ]
-    tags:
-      - 'v*.*.*'
   workflow_dispatch:
 
 jobs:
+  release-check:
+    runs-on: ubuntu-latest
+    outputs:
+      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
+      new_release_version: ${{ steps.semantic.outputs.new_release_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Semantic Release (Dry Run)
+        id: semantic
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          dry_run: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   build:
+    needs: release-check
+    if: needs.release-check.outputs.new_release_published == 'true'
     uses: ./.github/workflows/workflow-base.yml
     with:
       artifact_name_prefix: release-artifacts
+      app_version: ${{ needs.release-check.outputs.new_release_version }}
     secrets:
       APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
 
-  release:
-    needs: build
+  publish:
+    needs: [release-check, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      issues: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       
-      - name: Get version
-        id: get_version
-        shell: bash
-        run: |
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-            echo "IS_TAG=true" >> $GITHUB_OUTPUT
-          else
-            echo "VERSION=latest" >> $GITHUB_OUTPUT
-            echo "IS_TAG=false" >> $GITHUB_OUTPUT
-          fi
-        
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-      
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+
+      - name: Semantic Release (Publish)
+        uses: cycjimmy/semantic-release-action@v4
         with:
-          tag_name: ${{ steps.get_version.outputs.IS_TAG == 'true' && format('v{0}', steps.get_version.outputs.VERSION) || 'latest' }}
-          name: ${{ steps.get_version.outputs.IS_TAG == 'true' && format('Owon1041 v{0}', steps.get_version.outputs.VERSION) || 'Latest Build (main)' }}
-          draft: false
-          prerelease: ${{ steps.get_version.outputs.IS_TAG != 'true' }}
-          generate_release_notes: true
-          files: |
-            artifacts/**/*.dmg
-            artifacts/**/*.msi
-            artifacts/**/*.deb
+          extra_plugins: |
+            @semantic-release/github
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

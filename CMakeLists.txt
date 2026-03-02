@@ -12,9 +12,11 @@ if(APP_VERSION)
     endif()
     # Keep the full version for later use (packaging, etc.)
     set(FULL_APP_VERSION ${APP_VERSION})
+    add_definitions(-DAPP_VERSION_STRING="${FULL_APP_VERSION}")
 else()
     project(Owon1041 VERSION 0.0.0 LANGUAGES CXX)
     set(FULL_APP_VERSION "0.0.0")
+    add_definitions(-DAPP_VERSION_STRING="${FULL_APP_VERSION}")
 endif()
 
 # Add this near the top, after your project() declaration
@@ -67,9 +69,9 @@ find_package(Qt${QT_VERSION_MAJOR} COMPONENTS
 # Define macOS bundle properties
 set(MACOSX_BUNDLE_BUNDLE_NAME "Owon1041")
 set(MACOSX_BUNDLE_GUI_IDENTIFIER "de.macwake.Owon1041")
-set(MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION})
-set(MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION})
-set(MACOSX_BUNDLE_LONG_VERSION_STRING "${PROJECT_VERSION}")
+set(MACOSX_BUNDLE_BUNDLE_VERSION ${FULL_APP_VERSION})
+set(MACOSX_BUNDLE_SHORT_VERSION_STRING ${FULL_APP_VERSION})
+set(MACOSX_BUNDLE_LONG_VERSION_STRING "${FULL_APP_VERSION}")
 set(MACOSX_BUNDLE_COPYRIGHT "Copyright © 2025 MacWake. All rights reserved.")
 set(MACOSX_BUNDLE_INFO_STRING "OWON XDM-1041 Multimeter Interface")
 
@@ -198,6 +200,7 @@ elseif(UNIX AND NOT APPLE)
     # For distinct Debian/Ubuntu packages, we might need to adjust dependencies or names in GHA
     set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
     set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+    set(CPACK_DEBIAN_PACKAGE_VERSION "${FULL_APP_VERSION}")
 endif()
 
 include(CPack)

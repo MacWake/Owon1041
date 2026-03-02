@@ -56,7 +56,7 @@ void MainWindow::setupUi(QMainWindow *MainWindow) {
   setGeometry(MainWindow::settings->windowX(), MainWindow::settings->windowY(),
               MainWindow::settings->windowWidth(), MainWindow::settings->windowHeight());
   MainWindow->setMinimumSize(QSize(580, 162));
-  MainWindow->setWindowTitle("MacWake OWON XDM-1041");
+  MainWindow->setWindowTitle("MacWake OWON XDM-1041 v" APP_VERSION_STRING);
 
   // ReSharper disable once CppDFAMemoryLeak
   const auto centralwidget = new QWidget(MainWindow);
