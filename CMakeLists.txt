@@ -43,8 +43,12 @@ set(QT_COMMON_PATHS
     "/usr/local/opt/qt6"
     "/usr/local/qt6"
     "C:/Qt/6.8.2/msvc2022_64"
-    "C:/Qt/6.5.0/msvc2019_64"
-    "C:/Qt/6.5.0/mingw_64"
+        "C:/Qt/6.10.2/msvc2022_64"
+        "C:/Qt/6.10.2/mingw_64"
+        "C:/Qt/6.5.0/msvc2019_64"
+        "C:/Qt/6.5.0/mingw_64"
+        "C:/Qt/6.*/msvc2022_64"
+        "C:/Qt/6.*/mingw_64"
 )
 
 # Find the first valid Qt path
@@ -58,13 +62,18 @@ endforeach()
 
 # Try to find Qt6 first, fall back to Qt5 if not found
 set(QT_VERSION_MAJOR 6)
-find_package(Qt${QT_VERSION_MAJOR} COMPONENTS
-    Core
-    Gui
-    Widgets
-    SerialPort
-    QUIET
+find_package(Qt${QT_VERSION_MAJOR}
+    COMPONENTS
+        Core
+        Gui
+        Widgets
+        SerialPort
+    REQUIRED
 )
+
+if(Qt${QT_VERSION_MAJOR}_VERSION VERSION_GREATER_EQUAL "6.3")
+    qt_standard_project_setup()
+endif()
 
 # Define macOS bundle properties
 set(MACOSX_BUNDLE_BUNDLE_NAME "Owon1041")
@@ -175,6 +184,18 @@ elseif(WIN32)
     install(TARGETS Owon1041
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
+    
+    # Generate Qt deployment script for Windows
+    if(Qt${QT_VERSION_MAJOR}_VERSION VERSION_GREATER_EQUAL "6.3")
+        qt_generate_deploy_app_script(
+            TARGET Owon1041
+            OUTPUT_SCRIPT deploy_script
+            NO_TRANSLATIONS
+            NO_OPENGL_SW
+            NO_SYSTEM_D3D_COMPILER
+        )
+        install(SCRIPT ${deploy_script})
+    endif()
 endif()
 
 # CPack configuration
