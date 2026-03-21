@@ -191,8 +191,6 @@ elseif(WIN32)
             TARGET Owon1041
             OUTPUT_SCRIPT deploy_script
             NO_TRANSLATIONS
-            NO_OPENGL_SW
-            NO_SYSTEM_D3D_COMPILER
         )
         install(SCRIPT ${deploy_script})
     endif()
