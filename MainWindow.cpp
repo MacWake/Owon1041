@@ -55,7 +55,7 @@ void MainWindow::setupUi(QMainWindow *MainWindow) {
     MainWindow->setObjectName("MainWindow");
   setGeometry(MainWindow::settings->windowX(), MainWindow::settings->windowY(),
               MainWindow::settings->windowWidth(), MainWindow::settings->windowHeight());
-  MainWindow->setMinimumSize(QSize(580, 162));
+  //MainWindow->setMinimumSize(QSize(580, 162));
   MainWindow->setWindowTitle("MacWake OWON XDM-1041 v" APP_VERSION_STRING);
 
   // ReSharper disable once CppDFAMemoryLeak
@@ -69,7 +69,7 @@ void MainWindow::setupUi(QMainWindow *MainWindow) {
   font.setStyleHint(QFont::Monospace);
   font.setFamily("monospace");
   font.setFixedPitch(true);
-  font.setPointSize(72);
+  font.setPointSize(48);
 
 #if defined(Q_OS_WIN)
   font.setFamily("Consolas");

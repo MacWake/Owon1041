@@ -110,6 +110,7 @@ add_executable(Owon1041
     ${CMAKE_CURRENT_SOURCE_DIR}/Settings.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ConnectDialog.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ConnectDialog.h
+    resources.qrc
     ${PLATFORM_SPECIFIC_ICON_FILES}
 )
 
