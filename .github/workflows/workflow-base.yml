@@ -44,7 +44,7 @@ jobs:
             generator: "Unix Makefiles"
             container: "debian:trixie"
           - os: macos-latest
-            runner: macos-latest
+            runner: macos-15
             generator: "Unix Makefiles"
     
     runs-on: ${{ matrix.runner }}
@@ -149,7 +149,7 @@ jobs:
           -G "${{matrix.generator}}" 
           -DCMAKE_BUILD_TYPE=${{inputs.build_type}}
           -DCMAKE_PREFIX_PATH=${{runner.os == 'Linux' && '/usr/lib/x86_64-linux-gnu/cmake/Qt6' || env.Qt6_DIR}}
-          -DAPP_VERSION=${{ steps.get_version.outputs.VERSION }}
+          "-DAPP_VERSION=${{ steps.get_version.outputs.VERSION }}"
           ${{ matrix.os == 'macos-latest' && '-DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"' || '' }}
 
       - name: Build
