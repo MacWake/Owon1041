@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
       - name: Semantic Release (Dry Run)
         id: semantic
-        uses: cycjimmy/semantic-release-action@v4
+        uses: cycjimmy/semantic-release-action@v6
         with:
           dry_run: true
         env:
@@ -53,12 +53,12 @@ jobs:
           fetch-depth: 0
       
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
       - name: Semantic Release (Publish)
-        uses: cycjimmy/semantic-release-action@v4
+        uses: cycjimmy/semantic-release-action@v6
         with:
           extra_plugins: |
             @semantic-release/github

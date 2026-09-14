@@ -90,7 +90,7 @@ jobs:
       # Install Qt for Windows and macOS
       - name: Install Qt (Win/Mac)
         if: runner.os != 'Linux'
-        uses: jurplel/install-qt-action@v3
+        uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.2'
           host: ${{ matrix.os == 'windows-latest' && 'windows' || 'mac' }}
@@ -140,7 +140,7 @@ jobs:
       # macOS code signing setup
       - name: Import Code-Signing Certificates
         if: matrix.os == 'macos-latest' && env.APPLE_CERTIFICATE_BASE64 != ''
-        uses: Apple-Actions/import-codesign-certs@v2
+        uses: Apple-Actions/import-codesign-certs@v7
         with:
           p12-file-base64: ${{ env.APPLE_CERTIFICATE_BASE64 }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -220,7 +220,7 @@ jobs:
       
       # Upload artifacts
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_name_prefix }}-${{ matrix.os }}
           path: |

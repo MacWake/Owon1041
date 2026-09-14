@@ -206,6 +206,10 @@ set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_SOURCE_DIR}/doc/README.md")
 
 if(WIN32)
     set(CPACK_GENERATOR "WIX")
+    # WiX / MSI requires a numeric version (a.b.c.d). The -buildN/-PRn suffix
+    # is not a valid MSI version and breaks the WiX packaging step, so strip it.
+    string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" CPACK_PACKAGE_VERSION_WIX "${FULL_APP_VERSION}")
+    set(CPACK_PACKAGE_VERSION "${CPACK_PACKAGE_VERSION_WIX}")
     set(CPACK_WIX_UPGRADE_GUID "D9A1C5B0-1234-5678-90AB-CDEF12345678") # Generate a real one if needed
     set(CPACK_WIX_PRODUCT_ICON "${CMAKE_CURRENT_SOURCE_DIR}/Owon1041.ico")
     set(CPACK_PACKAGE_INSTALL_DIRECTORY "Owon1041")
