@@ -34,7 +34,7 @@ jobs:
         os: [ubuntu-22.04, macos-latest, windows-latest, debian-trixie]
         include:
           - os: windows-latest
-            runner: windows-latest
+            runner: windows-2022
             generator: "Visual Studio 17 2022"
           - os: ubuntu-22.04
             runner: ubuntu-22.04
@@ -55,7 +55,7 @@ jobs:
       APPLE_ID: ${{ secrets.APPLE_ID }}
         
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       
@@ -63,14 +63,17 @@ jobs:
       - name: Get version
         id: get_version
         run: |
+          # Latest version git tag (stipped of leading 'v'), fall back to 0.0.0 if none
+          LATEST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          LATEST_TAG="${LATEST_TAG#v}"
           if [[ "${{ inputs.app_version }}" != "" ]]; then
             VERSION_STR="${{ inputs.app_version }}"
           elif [[ $GITHUB_REF == refs/tags/v* ]]; then
             VERSION_STR="${GITHUB_REF#refs/tags/v}"
           elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
-            VERSION_STR="0.0.0-PR${{ github.event.pull_request.number }}"
+            VERSION_STR="${LATEST_TAG:-0.0.0}-PR${{ github.event.pull_request.number }}"
           else
-            VERSION_STR="0.0.0-build${{ github.run_number }}"
+            VERSION_STR="${LATEST_TAG:-0.0.0}-build${{ github.run_number }}"
           fi
           echo "VERSION=$VERSION_STR" >> $GITHUB_OUTPUT
           
@@ -217,7 +220,7 @@ jobs:
       
       # Upload artifacts
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ inputs.artifact_name_prefix }}-${{ matrix.os }}
           path: |
