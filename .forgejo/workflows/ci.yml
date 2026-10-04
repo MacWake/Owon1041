@@ -84,8 +84,8 @@ jobs:
   macos:
     needs: plan
     env:
-      APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
+      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+      NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
     strategy:
       fail-fast: false
       matrix:
@@ -119,12 +119,12 @@ jobs:
           printf '%s\n' "$qt_root/bin" >> "$GITHUB_PATH"
           printf 'QT_ROOT_DIR=%s\n' "$qt_root" >> "$GITHUB_ENV"
       - name: Import signing certificate
-        if: env.APPLE_CERTIFICATE_BASE64 != ''
+        if: env.MACOS_CERT_P12 != ''
         uses: https://github.com/Apple-Actions/import-codesign-certs@v7
         with:
-          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          keychain-password: ${{ forgejo.run_id }}
+          p12-file-base64: ${{ secrets.MACOS_CERT_P12 }}
+          p12-password: ${{ secrets.MACOS_CERT_PASSWORD }}
+          keychain-password: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
       - name: Configure and build
         env:
           APP_VERSION: ${{ needs.plan.outputs.version }}
@@ -144,26 +144,26 @@ jobs:
             mv build/owon1041.app "$app"
           fi
           args=()
-          if [[ -n "$APPLE_CERTIFICATE_BASE64" && -n "$APPLE_SIGNING_ID" ]]; then
+          if [[ -n "$MACOS_CERT_P12" && -n "$APPLE_SIGNING_ID" ]]; then
             args+=("-sign-for-notarization=Developer ID Application: $APPLE_SIGNING_ID")
           fi
           macdeployqt "$app" -always-overwrite "${args[@]}"
-          if [[ -n "$APPLE_CERTIFICATE_BASE64" ]]; then
+          if [[ -n "$MACOS_CERT_P12" ]]; then
             codesign --verify --deep --strict --verbose=2 "$app"
           fi
       - name: Notarize signed app
-        if: env.APPLE_ID != '' && env.APPLE_CERTIFICATE_BASE64 != ''
+        if: env.NOTARY_APPLE_ID != '' && env.MACOS_CERT_P12 != ''
         shell: bash
         env:
-          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          NOTARY_APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
         run: |
-          test -n "$APPLE_ID_PASSWORD"
-          test -n "$APPLE_TEAM_ID"
+          test -n "$NOTARY_APP_PASSWORD"
+          test -n "$NOTARY_TEAM_ID"
           ditto -c -k --keepParent build/Owon1041.app build/Owon1041.zip
           xcrun notarytool submit build/Owon1041.zip \
-            --apple-id "$APPLE_ID" --password "$APPLE_ID_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" --wait
+            --apple-id "$NOTARY_APPLE_ID" --password "$NOTARY_APP_PASSWORD" \
+            --team-id "$NOTARY_TEAM_ID" --wait
           xcrun stapler staple build/Owon1041.app
       - name: Package DMG
         env:
@@ -196,12 +196,13 @@ jobs:
       - name: Publish Forgejo and GitHub releases
         env:
           GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
-          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
           APPLE_SIGNING_ID: ${{ vars.APPLE_SIGNING_ID }}
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
           GITHUB_REPOSITORY: macwake/Owon1041
           RELEASE_VERSION: ${{ needs.plan.outputs.version }}
           RELEASE_TAG: ${{ needs.plan.outputs.tag }}

@@ -147,8 +147,8 @@ async function publish() {
     throw new Error('Missing GitHub token or Forgejo release context');
   }
   const signingSettings = [
-    'APPLE_CERTIFICATE_BASE64', 'APPLE_CERTIFICATE_PASSWORD', 'APPLE_ID',
-    'APPLE_ID_PASSWORD', 'APPLE_SIGNING_ID', 'APPLE_TEAM_ID',
+    'MACOS_CERT_P12', 'MACOS_CERT_PASSWORD', 'MACOS_KEYCHAIN_PASSWORD',
+    'NOTARY_APPLE_ID', 'NOTARY_APP_PASSWORD', 'NOTARY_TEAM_ID', 'APPLE_SIGNING_ID',
   ];
   const missingSigningSettings = signingSettings.filter(name => !process.env[name]);
   if (missingSigningSettings.length) {
