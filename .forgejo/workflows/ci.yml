@@ -84,9 +84,6 @@ jobs:
   macos:
     needs: plan
     runs-on: macos-amd64
-    env:
-      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
-      NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
     steps:
       - name: Expose Homebrew tools to actions
         shell: bash
@@ -111,7 +108,7 @@ jobs:
           printf '%s\n' "$qt_root/bin" >> "$GITHUB_PATH"
           printf 'QT_ROOT_DIR=%s\n' "$qt_root" >> "$GITHUB_ENV"
       - name: Import signing certificate
-        if: env.MACOS_CERT_P12 != ''
+        if: forgejo.ref == 'refs/heads/main'
         uses: https://github.com/Apple-Actions/import-codesign-certs@v7
         with:
           p12-file-base64: ${{ secrets.MACOS_CERT_P12 }}
@@ -129,23 +126,26 @@ jobs:
         shell: bash
         env:
           APPLE_SIGNING_ID: ${{ vars.APPLE_SIGNING_ID }}
+          SIGN_RELEASE: ${{ forgejo.ref == 'refs/heads/main' }}
         run: |
           app="build/Owon1041.app"
           if [[ -d build/owon1041.app && ! -d "$app" ]]; then
             mv build/owon1041.app "$app"
           fi
           args=()
-          if [[ -n "$MACOS_CERT_P12" && -n "$APPLE_SIGNING_ID" ]]; then
+          if [[ "$SIGN_RELEASE" == true ]]; then
+            test -n "$APPLE_SIGNING_ID"
             args+=("-sign-for-notarization=Developer ID Application: $APPLE_SIGNING_ID")
           fi
           macdeployqt "$app" -always-overwrite "${args[@]}"
-          if [[ -n "$MACOS_CERT_P12" ]]; then
+          if [[ "$SIGN_RELEASE" == true ]]; then
             codesign --verify --deep --strict --verbose=2 "$app"
           fi
       - name: Notarize signed app
-        if: env.NOTARY_APPLE_ID != '' && env.MACOS_CERT_P12 != ''
+        if: forgejo.ref == 'refs/heads/main'
         shell: bash
         env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
           NOTARY_APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
         run: |
