@@ -75,7 +75,7 @@ jobs:
           test "${#packages[@]}" -eq 1
           mv "${packages[0]}" "../dist/Owon1041-${APP_VERSION}-${DISTRO}.deb"
         shell: bash
-      - uses: https://data.forgejo.org/actions/upload-artifact@v4
+      - uses: https://data.forgejo.org/forgejo/upload-artifact@v4
         with:
           name: package-${{ matrix.distro }}
           path: dist/*.deb
@@ -84,6 +84,7 @@ jobs:
   macos:
     needs: plan
     env:
+      PATH: /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
       APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
       APPLE_ID: ${{ secrets.APPLE_ID }}
     strategy:
@@ -97,14 +98,19 @@ jobs:
     runs-on: ${{ matrix.label }}
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v6
-      - uses: https://github.com/jurplel/install-qt-action@v4
-        with:
-          version: '6.8.2'
-          host: mac
-          target: desktop
-          arch: clang_64
-          modules: qtserialport
-          setup-python: true
+      - name: Install Qt 6.8.2
+        shell: bash
+        run: |
+          ci_tmp="${RUNNER_TEMP:-$PWD/.ci-tmp}"
+          mkdir -p "$ci_tmp"
+          python3 -m venv "$ci_tmp/aqt-venv"
+          "$ci_tmp/aqt-venv/bin/python" -m pip install 'aqtinstall==3.3.*'
+          "$ci_tmp/aqt-venv/bin/python" -m aqt install-qt mac desktop 6.8.2 clang_64 \
+            --outputdir "$ci_tmp/Qt" --modules qtserialport
+          qt_root="$ci_tmp/Qt/6.8.2/clang_64"
+          test -x "$qt_root/bin/macdeployqt"
+          printf '%s\n' "$qt_root/bin" >> "$GITHUB_PATH"
+          printf 'QT_ROOT_DIR=%s\n' "$qt_root" >> "$GITHUB_ENV"
       - name: Import signing certificate
         if: env.APPLE_CERTIFICATE_BASE64 != ''
         uses: https://github.com/Apple-Actions/import-codesign-certs@v7
@@ -118,6 +124,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           cmake -S . -B build -G 'Unix Makefiles' -DCMAKE_BUILD_TYPE=Release \
+            "-DCMAKE_PREFIX_PATH=$QT_ROOT_DIR" \
             "-DAPP_VERSION=$APP_VERSION" "-DCMAKE_OSX_ARCHITECTURES=$ARCH"
           cmake --build build --parallel 2
       - name: Deploy Qt and sign
@@ -159,7 +166,7 @@ jobs:
           mkdir -p dist
           hdiutil create -volname Owon1041 -srcfolder build/Owon1041.app \
             -ov -format UDZO "dist/Owon1041-${APP_VERSION}-${ARCH_LABEL}.dmg"
-      - uses: https://data.forgejo.org/actions/upload-artifact@v4
+      - uses: https://data.forgejo.org/forgejo/upload-artifact@v4
         with:
           name: package-${{ matrix.label }}
           path: dist/*.dmg
@@ -174,7 +181,7 @@ jobs:
       - uses: https://data.forgejo.org/actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: https://data.forgejo.org/actions/download-artifact@v4
+      - uses: https://data.forgejo.org/forgejo/download-artifact@v4
         with:
           pattern: package-*
           path: dist/release
