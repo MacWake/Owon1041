@@ -83,18 +83,10 @@ jobs:
 
   macos:
     needs: plan
+    runs-on: macos-amd64
     env:
       MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
       NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: macos-amd64
-            arch: x86_64
-          - label: macos-arm64
-            arch: arm64
-    runs-on: ${{ matrix.label }}
     steps:
       - name: Expose Homebrew tools to actions
         shell: bash
@@ -114,7 +106,7 @@ jobs:
           "$ci_tmp/aqt-venv/bin/python" -m pip install 'aqtinstall==3.3.*'
           "$ci_tmp/aqt-venv/bin/python" -m aqt install-qt mac desktop 6.8.2 clang_64 \
             --outputdir "$ci_tmp/Qt" --modules qtserialport
-          qt_root="$ci_tmp/Qt/6.8.2/clang_64"
+          qt_root="$ci_tmp/Qt/6.8.2/macos"
           test -x "$qt_root/bin/macdeployqt"
           printf '%s\n' "$qt_root/bin" >> "$GITHUB_PATH"
           printf 'QT_ROOT_DIR=%s\n' "$qt_root" >> "$GITHUB_ENV"
@@ -128,11 +120,10 @@ jobs:
       - name: Configure and build
         env:
           APP_VERSION: ${{ needs.plan.outputs.version }}
-          ARCH: ${{ matrix.arch }}
         run: |
           cmake -S . -B build -G 'Unix Makefiles' -DCMAKE_BUILD_TYPE=Release \
             "-DCMAKE_PREFIX_PATH=$QT_ROOT_DIR" \
-            "-DAPP_VERSION=$APP_VERSION" "-DCMAKE_OSX_ARCHITECTURES=$ARCH"
+            "-DAPP_VERSION=$APP_VERSION" '-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64'
           cmake --build build --parallel 2
       - name: Deploy Qt and sign
         shell: bash
@@ -161,21 +152,24 @@ jobs:
           test -n "$NOTARY_APP_PASSWORD"
           test -n "$NOTARY_TEAM_ID"
           ditto -c -k --keepParent build/Owon1041.app build/Owon1041.zip
-          xcrun notarytool submit build/Owon1041.zip \
+          status="$(xcrun notarytool submit build/Owon1041.zip \
             --apple-id "$NOTARY_APPLE_ID" --password "$NOTARY_APP_PASSWORD" \
-            --team-id "$NOTARY_TEAM_ID" --wait
+            --team-id "$NOTARY_TEAM_ID" --wait --output-format json \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
+          test "$status" = Accepted
           xcrun stapler staple build/Owon1041.app
+          xcrun stapler validate build/Owon1041.app
       - name: Package DMG
         env:
           APP_VERSION: ${{ needs.plan.outputs.version }}
-          ARCH_LABEL: ${{ matrix.label }}
         run: |
+          lipo -verify_arch x86_64 arm64 build/Owon1041.app/Contents/MacOS/Owon1041
           mkdir -p dist
           hdiutil create -volname Owon1041 -srcfolder build/Owon1041.app \
-            -ov -format UDZO "dist/Owon1041-${APP_VERSION}-${ARCH_LABEL}.dmg"
+            -ov -format UDZO "dist/Owon1041-${APP_VERSION}-macos-universal.dmg"
       - uses: https://data.forgejo.org/forgejo/upload-artifact@v4
         with:
-          name: package-${{ matrix.label }}
+          name: package-macos-universal
           path: dist/*.dmg
           if-no-files-found: error
 

@@ -126,9 +126,9 @@ async function ensureRelease(apiBase, ownerRepo, token, result, gh = false) {
 
 function releaseFiles(assetDir) {
   const files = readdirSync(assetDir).filter(file => /\.(?:deb|dmg)$/.test(file)).sort();
-  const expected = ['debian-trixie.deb', 'ubuntu22.deb', 'macos-amd64.dmg', 'macos-arm64.dmg'];
+  const expected = ['debian-trixie.deb', 'ubuntu22.deb', 'macos-universal.dmg'];
   if (files.length !== expected.length || expected.some(suffix => !files.some(file => file.endsWith(suffix)))) {
-    throw new Error('Release must contain Ubuntu, Debian, macOS amd64, and macOS arm64 packages');
+    throw new Error('Release must contain Ubuntu, Debian, and macOS universal packages');
   }
   return files;
 }
