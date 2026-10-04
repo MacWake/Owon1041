@@ -84,7 +84,6 @@ jobs:
   macos:
     needs: plan
     env:
-      PATH: /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
       APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
       APPLE_ID: ${{ secrets.APPLE_ID }}
     strategy:
@@ -97,6 +96,14 @@ jobs:
             arch: arm64
     runs-on: ${{ matrix.label }}
     steps:
+      - name: Expose Homebrew tools to actions
+        shell: bash
+        run: |
+          for prefix in /opt/homebrew/bin /usr/local/bin; do
+            if [[ -x "$prefix/node" ]]; then
+              printf '%s\n' "$prefix" >> "$GITHUB_PATH"
+            fi
+          done
       - uses: https://data.forgejo.org/actions/checkout@v6
       - name: Install Qt 6.8.2
         shell: bash
