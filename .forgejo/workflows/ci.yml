@@ -163,7 +163,7 @@ jobs:
         env:
           APP_VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          lipo -verify_arch x86_64 arm64 build/Owon1041.app/Contents/MacOS/Owon1041
+          lipo build/Owon1041.app/Contents/MacOS/Owon1041 -verify_arch x86_64 arm64
           mkdir -p dist
           hdiutil create -volname Owon1041 -srcfolder build/Owon1041.app \
             -ov -format UDZO "dist/Owon1041-${APP_VERSION}-macos-universal.dmg"
