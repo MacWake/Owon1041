@@ -2,6 +2,7 @@
 
 #include "ConnectDialog.h"
 #include <QDebug>
+#include <QElapsedTimer>
 #include <QMouseEvent>
 #include <QThread>
 #include <QTimer>

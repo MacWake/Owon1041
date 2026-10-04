@@ -1,0 +1,195 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing tag to retry a partially published release
+        required: false
+        type: string
+
+jobs:
+  plan:
+    runs-on: docker
+    container: node:24-bookworm
+    outputs:
+      release: ${{ steps.version.outputs.release }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Test release versioning
+        run: node --test scripts/release.test.mjs
+      - name: Calculate version
+        id: version
+        env:
+          RETRY_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/release.mjs plan
+
+  linux:
+    needs: plan
+    runs-on: docker
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: ubuntu22
+            image: ghcr.io/catthehacker/ubuntu:act-22.04
+            serialport_package: libqt6serialport6-dev
+          - distro: debian-trixie
+            image: node:24-trixie
+            serialport_package: qt6-serialport-dev
+    container: ${{ matrix.image }}
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v6
+      - name: Install build dependencies
+        env:
+          SERIALPORT_PACKAGE: ${{ matrix.serialport_package }}
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build qt6-base-dev "$SERIALPORT_PACKAGE" \
+            libgl1-mesa-dev libxkbcommon-x11-0 libicu-dev \
+            libdouble-conversion-dev libpcre2-16-0
+      - name: Configure and build
+        env:
+          APP_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DAPP_VERSION=$APP_VERSION"
+          cmake --build build --parallel 2
+      - name: Package DEB
+        env:
+          APP_VERSION: ${{ needs.plan.outputs.version }}
+          DISTRO: ${{ matrix.distro }}
+        run: |
+          cd build
+          cpack -G DEB
+          mkdir -p ../dist
+          packages=( *.deb )
+          test "${#packages[@]}" -eq 1
+          mv "${packages[0]}" "../dist/Owon1041-${APP_VERSION}-${DISTRO}.deb"
+        shell: bash
+      - uses: https://data.forgejo.org/actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.distro }}
+          path: dist/*.deb
+          if-no-files-found: error
+
+  macos:
+    needs: plan
+    env:
+      APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macos-amd64
+            arch: x86_64
+          - label: macos-arm64
+            arch: arm64
+    runs-on: ${{ matrix.label }}
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v6
+      - uses: https://github.com/jurplel/install-qt-action@v4
+        with:
+          version: '6.8.2'
+          host: mac
+          target: desktop
+          arch: clang_64
+          modules: qtserialport
+          setup-python: true
+      - name: Import signing certificate
+        if: env.APPLE_CERTIFICATE_BASE64 != ''
+        uses: https://github.com/Apple-Actions/import-codesign-certs@v7
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          keychain-password: ${{ forgejo.run_id }}
+      - name: Configure and build
+        env:
+          APP_VERSION: ${{ needs.plan.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          cmake -S . -B build -G 'Unix Makefiles' -DCMAKE_BUILD_TYPE=Release \
+            "-DAPP_VERSION=$APP_VERSION" "-DCMAKE_OSX_ARCHITECTURES=$ARCH"
+          cmake --build build --parallel 2
+      - name: Deploy Qt and sign
+        shell: bash
+        env:
+          APPLE_SIGNING_ID: ${{ vars.APPLE_SIGNING_ID }}
+        run: |
+          app="build/Owon1041.app"
+          if [[ -d build/owon1041.app && ! -d "$app" ]]; then
+            mv build/owon1041.app "$app"
+          fi
+          args=()
+          if [[ -n "$APPLE_CERTIFICATE_BASE64" && -n "$APPLE_SIGNING_ID" ]]; then
+            args+=("-sign-for-notarization=Developer ID Application: $APPLE_SIGNING_ID")
+          fi
+          macdeployqt "$app" -always-overwrite "${args[@]}"
+          if [[ -n "$APPLE_CERTIFICATE_BASE64" ]]; then
+            codesign --verify --deep --strict --verbose=2 "$app"
+          fi
+      - name: Notarize signed app
+        if: env.APPLE_ID != '' && env.APPLE_CERTIFICATE_BASE64 != ''
+        shell: bash
+        env:
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          test -n "$APPLE_ID_PASSWORD"
+          test -n "$APPLE_TEAM_ID"
+          ditto -c -k --keepParent build/Owon1041.app build/Owon1041.zip
+          xcrun notarytool submit build/Owon1041.zip \
+            --apple-id "$APPLE_ID" --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple build/Owon1041.app
+      - name: Package DMG
+        env:
+          APP_VERSION: ${{ needs.plan.outputs.version }}
+          ARCH_LABEL: ${{ matrix.label }}
+        run: |
+          mkdir -p dist
+          hdiutil create -volname Owon1041 -srcfolder build/Owon1041.app \
+            -ov -format UDZO "dist/Owon1041-${APP_VERSION}-${ARCH_LABEL}.dmg"
+      - uses: https://data.forgejo.org/actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.label }}
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, linux, macos]
+    if: forgejo.ref == 'refs/heads/main' && needs.plan.outputs.release == 'true'
+    runs-on: docker
+    container: node:24-bookworm
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: https://data.forgejo.org/actions/download-artifact@v4
+        with:
+          pattern: package-*
+          path: dist/release
+          merge-multiple: true
+      - name: Publish Forgejo and GitHub releases
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_SIGNING_ID: ${{ vars.APPLE_SIGNING_ID }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          GITHUB_REPOSITORY: macwake/Owon1041
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          RETRY_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/release.mjs publish
