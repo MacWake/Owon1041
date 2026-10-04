@@ -97,16 +97,16 @@ jobs:
             fi
           done
       - uses: https://data.forgejo.org/actions/checkout@v6
-      - name: Install Qt 6.8.2
+      - name: Install Qt 6.9.2
         shell: bash
         run: |
           ci_tmp="${RUNNER_TEMP:-$PWD/.ci-tmp}"
           mkdir -p "$ci_tmp"
           python3 -m venv "$ci_tmp/aqt-venv"
           "$ci_tmp/aqt-venv/bin/python" -m pip install 'aqtinstall==3.3.*'
-          "$ci_tmp/aqt-venv/bin/python" -m aqt install-qt mac desktop 6.8.2 clang_64 \
+          "$ci_tmp/aqt-venv/bin/python" -m aqt install-qt mac desktop 6.9.2 clang_64 \
             --outputdir "$ci_tmp/Qt" --modules qtserialport
-          qt_root="$ci_tmp/Qt/6.8.2/macos"
+          qt_root="$ci_tmp/Qt/6.9.2/macos"
           test -x "$qt_root/bin/macdeployqt"
           printf '%s\n' "$qt_root/bin" >> "$GITHUB_PATH"
           printf 'QT_ROOT_DIR=%s\n' "$qt_root" >> "$GITHUB_ENV"
