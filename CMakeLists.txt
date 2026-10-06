@@ -68,6 +68,7 @@ find_package(Qt${QT_VERSION_MAJOR}
         Gui
         Widgets
         SerialPort
+        Network
     REQUIRED
 )
 
@@ -110,6 +111,8 @@ add_executable(Owon1041
     ${CMAKE_CURRENT_SOURCE_DIR}/Settings.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ConnectDialog.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ConnectDialog.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ScpiProxy.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ScpiProxy.h
     resources.qrc
     ${PLATFORM_SPECIFIC_ICON_FILES}
 )
@@ -119,7 +122,22 @@ target_link_libraries(Owon1041
     Qt${QT_VERSION_MAJOR}::Gui
     Qt${QT_VERSION_MAJOR}::Widgets
     Qt${QT_VERSION_MAJOR}::SerialPort
+    Qt${QT_VERSION_MAJOR}::Network
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(scpi_proxy_test
+        tests/scpi_proxy_test.cpp
+        ScpiProxy.cpp
+        ScpiProxy.h
+    )
+    target_link_libraries(scpi_proxy_test
+        Qt${QT_VERSION_MAJOR}::Core
+        Qt${QT_VERSION_MAJOR}::Network
+    )
+    add_test(NAME scpi_proxy_test COMMAND scpi_proxy_test)
+endif()
 
 # Set platform-specific properties
 if(APPLE)

@@ -3,9 +3,12 @@
 
 #include <QLabel>
 #include <QMainWindow>
+#include <QDateTime>
 
 #include "ConnectDialog.h"
 #include "Settings.h"
+
+class ScpiProxy;
 
 class MainWindow final : public QMainWindow {
   Q_OBJECT
@@ -59,6 +62,8 @@ private slots:
 
   void updateMeasurement(); // Make sure this exists and is declared as a slot
 
+  QByteArray handleProxyQuery(const QByteArray &command);
+
 private:
   // UI elements as member variables (excluding centralwidget)
   QLabel *measurement;
@@ -75,6 +80,9 @@ private:
 
   ConnectDialog *m_connect_dialog;
   QString m_unit;
+  QString m_mode;
+  QString m_lastDisplay;
+  QDateTime m_lastDisplayAt;
 
   void connectSerial();
 
@@ -86,6 +94,7 @@ private:
 
   QTimer *m_timer = nullptr;
   QSerialPort *m_port = nullptr;
+  ScpiProxy *m_proxy = nullptr;
 };
 
 #endif // MAINWINDOW_H

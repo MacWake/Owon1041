@@ -1,9 +1,13 @@
 #include "MainWindow.h"
 
 #include "ConnectDialog.h"
+#include "ScpiProxy.h"
 #include <QDebug>
 #include <QElapsedTimer>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMouseEvent>
+#include <QRegularExpression>
 #include <QThread>
 #include <QTimer>
 #include <QtWidgets/QApplication>
@@ -31,23 +35,23 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) { // NOLINT(*-pro-
 
   setupUi(this);
 
+  m_proxy = new ScpiProxy(
+      [this](const QByteArray &command) { return handleProxyQuery(command); },
+      this);
+  if (m_proxy->start()) {
+    measurement->setToolTip("Read-only SCPI: 127.0.0.1:5025");
+  } else {
+    qWarning() << "SCPI proxy could not listen:" << m_proxy->errorString();
+    measurement->setToolTip("SCPI proxy unavailable: " +
+                            m_proxy->errorString());
+  }
+
   QTimer::singleShot(2000, this, &MainWindow::connectSerial);
 }
 
 MainWindow::~MainWindow() {
-  // No need to delete UI elements as they are deleted when parent is deleted
   if (m_port) {
-    if (m_port->isOpen()) {
-      m_port->close();
-    }
-    delete m_port;
-    m_port = nullptr;
-  }
-
-  if (m_timer) {
-    m_timer->stop();
-    delete m_timer;
-    m_timer = nullptr;
+    m_port->close();
   }
 }
 
@@ -228,46 +232,58 @@ void MainWindow::onConnect() {
 }
 
 bool MainWindow::openConnectDialog() {
+  m_timer->stop();
+  if (m_port) {
+    m_port->close();
+    m_port = nullptr;
+  }
+  m_lastDisplay.clear();
+  m_lastDisplayAt = {};
+  measurement->setText("not connected");
   if (m_connect_dialog->exec() == QDialog::Accepted) {
     const auto serialPort = m_connect_dialog->getConfiguredSerialPort();
-    if (serialPort) {
+    if (serialPort && serialPort->isOpen()) {
+      m_port = serialPort;
       MainWindow::settings->setDevice(serialPort->portName());
+      onConnect();
       return true;
     }
-    this->m_port = serialPort;
   }
   return false;
 }
 
 void MainWindow::updateMeasurement() {
-  if (!this->m_port) {
-    std::cerr << "Port is NULL, stopping timer" << std::endl;
+  if (!this->m_port || !this->m_port->isOpen()) {
     this->m_timer->stop();
-    this->m_timer->deleteLater();
-    this->m_timer = nullptr;
+    measurement->setText("not connected");
+    m_lastDisplay.clear();
+    m_lastDisplayAt = {};
     return;
   }
   auto reading = this->writeSCPICommand("MEAS1:SHOW?");
-
-  QString display = reading.replace("\u00a6\u00b8", "Ω Ohm")
-                        .replace("\u00aa\u00cc", "µ")
-                        .replace("\u00a1\u00e6", "°C")
-                        .replace("\u00a8\u0048", "°F");
-  this->measurement->setText(display);
+  if (reading.isEmpty())
+    return;
+  reading.replace(QRegularExpression("(?<=\\d)(?=[^\\d.eE+\\-\\s])"), " ");
+  m_lastDisplay = reading;
+  m_lastDisplayAt = QDateTime::currentDateTimeUtc();
+  measurement->setText(reading);
 }
 
 void MainWindow::onVoltage50V() {
   this->m_unit = "V";
+  this->m_mode = "VOLT:DC";
   this->writeSCPIStatement("CONF:VOLT:DC 50");
 }
 
 void MainWindow::onVoltageAuto() {
   this->m_unit = "V";
+  this->m_mode = "VOLT:DC";
   this->writeSCPIStatement("CONF:VOLT:DC AUTO");
 }
 
 void MainWindow::onShort() {
   this->m_unit = "Ω";
+  this->m_mode = "CONT";
   this->writeSCPIStatement("CONF:CONT");
   if (settings->getBeepShort()) {
     qDebug() << "Beep resistance: " << MainWindow::settings->getBeepResistance();
@@ -280,6 +296,8 @@ void MainWindow::onShort() {
 }
 
 void MainWindow::onDiode() {
+  this->m_unit = "V";
+  this->m_mode = "DIOD";
   if (MainWindow::settings->getBeepDiode()) {
     this->writeSCPIStatement("SYST:BEEP:STAT ON");
   } else {
@@ -289,31 +307,38 @@ void MainWindow::onDiode() {
 }
 
 void MainWindow::onResistance50K() {
+  this->m_unit = "Ω";
+  this->m_mode = "RES";
   this->writeSCPIStatement("CONF:RES 50E3");
 }
 
 void MainWindow::onResistanceAuto() {
   this->m_unit = "Ω";
+  this->m_mode = "RES";
   this->writeSCPIStatement("CONF:RES AUTO");
 }
 
 void MainWindow::onCapacitance50uF() {
   this->m_unit = "F";
+  this->m_mode = "CAP";
   this->writeSCPIStatement("CONF:CAP 50E-6");
 }
 
 void MainWindow::onCapacitanceAuto() {
   this->m_unit = "F";
+  this->m_mode = "CAP";
   this->writeSCPIStatement("CONF:CAP AUTO");
 }
 
 void MainWindow::onFrequency() {
   this->m_unit = "Hz";
+  this->m_mode = "FREQ";
   this->writeSCPIStatement("CONF:FREQ");
 }
 
 void MainWindow::onPeriod() {
-  this->m_unit = "%";
+  this->m_unit = "s";
+  this->m_mode = "PER";
   this->writeSCPIStatement("CONF:PER");
 }
 
@@ -325,12 +350,12 @@ void MainWindow::onSerialError(const QString &message) {
   qDebug() << "Serial port error: " << message;
   std::cerr << "Serial port error, closing\n";
   if (this->m_port) {
-    if (this->m_port->isOpen()) {
-      this->m_port->close();
-    }
-    delete this->m_port;
+    this->m_port->close();
     this->m_port = nullptr;
   }
+  m_lastDisplay.clear();
+  m_lastDisplayAt = {};
+  measurement->setText("not connected");
 }
 
 QString MainWindow::readSCPI() const {
@@ -378,16 +403,11 @@ QString MainWindow::readSCPI() const {
     data.replace(QByteArray("\xa8\x48", 2), "°F");
   }
   response = QString::fromUtf8(data);
-  QRegularExpression re("([-+]?[0-9]*\\.?[0-9]+)([^0-9.]+)");
-  response = response.replace(re, "\\1 \\2");
-
-  response = response.replace("  ", " ");
-
-  return response;
+  return response.trimmed();
 }
 
 void MainWindow::writeSCPIStatement(const QString &command) const {
-  if (!this->m_port) {
+  if (!this->m_port || !this->m_port->isOpen()) {
     std::cerr << "No port open, refusing writeSCPI\n";
     return;
   }
@@ -398,15 +418,46 @@ void MainWindow::writeSCPIStatement(const QString &command) const {
 }
 
 QString MainWindow::writeSCPICommand(const QString &command) const {
-  if (!this->m_port) {
+  if (!this->m_port || !this->m_port->isOpen()) {
     std::cerr << "No port open, refusing writeSCPI\n";
-    return nullptr;
+    return {};
   }
   // qDebug() << "Writing " << command;
   this->m_port->write(QString(command + "\r\n").toLocal8Bit());
   this->m_port->flush();
   QThread::msleep(10);
   return readSCPI();
+}
+
+QByteArray MainWindow::handleProxyQuery(const QByteArray &command) {
+  const bool connected = m_port && m_port->isOpen();
+  QJsonObject state{{"connected", connected},
+                    {"port", connected ? m_port->portName() : QString()},
+                    {"mode", connected ? m_mode : QString()},
+                    {"mode_source", "app"},
+                    {"unit", connected ? m_unit : QString()},
+                    {"display", connected ? m_lastDisplay : QString()},
+                    {"display_at", connected && m_lastDisplayAt.isValid()
+                                       ? m_lastDisplayAt.toString(Qt::ISODateWithMs)
+                                       : QString()}};
+  if (command == "PROX:STATE?")
+    return QJsonDocument(state).toJson(QJsonDocument::Compact);
+  if (!connected)
+    return "ERR:DISCONNECTED";
+
+  QByteArray meterCommand = command;
+  if (command == "READ?" || command == "PROX:READ?")
+    meterCommand = "MEAS1?";
+  const QString response = writeSCPICommand(QString::fromLatin1(meterCommand));
+  if (response.isEmpty())
+    return "ERR:TIMEOUT";
+  if (command == "PROX:READ?") {
+    state.insert("value", response);
+    state.insert("measured_at",
+                 QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    return QJsonDocument(state).toJson(QJsonDocument::Compact);
+  }
+  return response.toUtf8();
 }
 
 bool MainWindow::eventFilter(QObject *obj, QEvent *event) {
