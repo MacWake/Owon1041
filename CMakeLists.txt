@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.18)
 
 # Set version from variable if provided, otherwise use default
 if(APP_VERSION)
@@ -32,31 +32,22 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# wxWidgets comes from the third_party/wxwidgets submodule (static build).
-# The shared Forgejo build will replace this once available; until then pass
-# -DOWON_USE_SYSTEM_WX=ON to link a system-installed wxWidgets instead.
-option(OWON_USE_SYSTEM_WX "Use system-installed wxWidgets instead of the git submodule" OFF)
+# wxWidgets comes as a static prebuilt from the native-deps Forgejo releases
+# (see cmake/wx-prebuilt.cmake). Pass -DOWON_USE_SYSTEM_WX=ON to link a
+# system-installed wxWidgets instead.
+option(OWON_USE_SYSTEM_WX "Use system-installed wxWidgets instead of the native-deps prebuilt" OFF)
 
 if(OWON_USE_SYSTEM_WX)
     find_package(wxWidgets REQUIRED COMPONENTS core base)
     include(${wxWidgets_USE_FILE})
     set(WX_LINK_LIBS ${wxWidgets_LIBRARIES})
 else()
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/wxwidgets/CMakeLists.txt")
-        message(FATAL_ERROR
-            "wxWidgets submodule missing at third_party/wxwidgets. "
-            "Run: git submodule update --init third_party/wxwidgets")
-    endif()
-    # Static, minimal-surface build of the submodule.
-    set(wxBUILD_SHARED OFF CACHE BOOL "" FORCE)
-    set(wxBUILD_SAMPLES OFF CACHE BOOL "" FORCE)
-    set(wxBUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(wxBUILD_DEMOS OFF CACHE BOOL "" FORCE)
-    set(wxBUILD_INSTALL OFF CACHE BOOL "" FORCE)
-    set(wxUSE_WEBVIEW OFF CACHE BOOL "" FORCE)
-    set(wxUSE_MEDIACTRL OFF CACHE BOOL "" FORCE)
-    add_subdirectory(third_party/wxwidgets)
-    set(WX_LINK_LIBS wx::core wx::base)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/wx-prebuilt.cmake)
+    set(wxWidgets_USE_STATIC ON)
+    set(wxWidgets_CONFIG_EXECUTABLE "${OWON_WX_CONFIG}")
+    find_package(wxWidgets REQUIRED COMPONENTS core base)
+    include(${wxWidgets_USE_FILE})
+    set(WX_LINK_LIBS ${wxWidgets_LIBRARIES})
 endif()
 
 # Define macOS bundle properties

@@ -46,13 +46,11 @@ jobs:
     container: ${{ matrix.image }}
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v6
-      - name: Init wxWidgets submodule
-        run: git submodule update --init --depth 1 --recursive third_party/wxwidgets
       - name: Install build dependencies
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build pkg-config \
+            build-essential cmake ninja-build pkg-config curl ca-certificates \
             libgtk-3-dev libgl1-mesa-dev
       - name: Configure and build
         env:
@@ -91,9 +89,6 @@ jobs:
             fi
           done
       - uses: https://data.forgejo.org/actions/checkout@v6
-      - name: Init wxWidgets submodule
-        shell: bash
-        run: git submodule update --init --depth 1 --recursive third_party/wxwidgets
       - name: Import signing certificate
         if: forgejo.ref == 'refs/heads/main'
         uses: https://github.com/Apple-Actions/import-codesign-certs@v7
