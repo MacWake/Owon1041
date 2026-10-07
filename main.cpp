@@ -8,6 +8,7 @@ public:
   bool OnInit() override {
     SetAppName("Owon1041");
     SetVendorName("MacWake");
+    ::wxInitAllImageHandlers(); // required before LoadFile(..., wxBITMAP_TYPE_PNG)
     auto *window = new MainWindow();
     const wxString candidates[] = {
         wxStandardPaths::Get().GetResourcesDir() + "/Owon1041.png",
