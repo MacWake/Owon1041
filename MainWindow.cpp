@@ -1,211 +1,269 @@
 #include "MainWindow.h"
 
 #include "ConnectDialog.h"
-#include <QDebug>
-#include <QElapsedTimer>
-#include <QMouseEvent>
-#include <QThread>
-#include <QTimer>
-#include <QtWidgets/QApplication>
-#include <QtWidgets/QLabel>
-#include <QtWidgets/QMainWindow>
-#include <QtWidgets/QPushButton>
-#include <QtWidgets/QWidget>
+
+#include <cstdio>
+#include <ctime>
 #include <iostream>
+#include <thread>
 
-Settings *MainWindow::settings = nullptr;
+namespace {
+// Timer IDs for the poll and autoconnect timers.
+constexpr int ID_POLL_TIMER = wxID_HIGHEST + 1;
+constexpr int ID_AUTOCONNECT_TIMER = wxID_HIGHEST + 2;
 
-MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) { // NOLINT(*-pro-type-member-init)
-  if (!MainWindow::settings) {
-    MainWindow::settings = new Settings("MacWake", "Owon1041", this);
-    MainWindow::settings->load();
+std::string Trim(const std::string &s) {
+  const auto b = s.find_first_not_of(" \t\r\n");
+  if (b == std::string::npos) {
+    return "";
+  }
+  const auto e = s.find_last_not_of(" \t\r\n");
+  return s.substr(b, e - b + 1);
+}
+
+// Insert a space between a digit and a directly attached unit suffix,
+// mirroring the Qt behaviour: (?<=\d)(?=[^\d.eE+\-\s])
+std::string SpaceDigitUnit(const std::string &s) {
+  auto isUnitBoundary = [](char prev, char next) {
+    if (prev < '0' || prev > '9') {
+      return false;
+    }
+    if (next >= '0' && next <= '9') {
+      return false;
+    }
+    return next != '.' && next != 'e' && next != 'E' && next != '+' &&
+           next != '-' && next != ' ' && next != '\t' && next != '\r' &&
+           next != '\n';
+  };
+  std::string out;
+  out.reserve(s.size() + 2);
+  for (std::size_t i = 0; i < s.size(); ++i) {
+    out.push_back(s[i]);
+    if (i + 1 < s.size() && isUnitBoundary(s[i], s[i + 1])) {
+      out.push_back(' ');
+    }
+  }
+  return out;
+}
+
+// The meter sends GB2312-ish byte pairs for special units; map them to UTF-8.
+void FixMeterEncoding(std::string &s) {
+  const std::pair<std::string, std::string> table[] = {
+      {std::string("\xa6\xb8", 2), "\xce\xa9"},     // Ohm sign
+      {std::string("\xa6\xcc", 2), "\xc2\xb5"},     // Micro sign
+      {std::string("\xa1\xe6", 2), "\xc2\xb0" "C"}, // degree C
+      {std::string("\xa8\x48", 2), "\xc2\xb0" "F"}, // degree F
+  };
+  for (const auto &[from, to] : table) {
+    std::string::size_type pos = 0;
+    while ((pos = s.find(from, pos)) != std::string::npos) {
+      s.replace(pos, from.size(), to);
+      pos += to.size();
+    }
+  }
+}
+
+std::string JsonEscape(const std::string &s) {
+  std::string out;
+  for (char c : s) {
+    switch (c) {
+    case '"':
+      out += "\\\"";
+      break;
+    case '\\':
+      out += "\\\\";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    case '\r':
+      out += "\\r";
+      break;
+    case '\t':
+      out += "\\t";
+      break;
+    default:
+      if (static_cast<unsigned char>(c) < 0x20) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "\\u%04x", c);
+        out += buf;
+      } else {
+        out += c;
+      }
+    }
+  }
+  return out;
+}
+
+std::string ToIsoUtcMs(const std::chrono::system_clock::time_point tp) {
+  const auto ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()) % 1000;
+  std::time_t t = std::chrono::system_clock::to_time_t(tp);
+  std::tm tm{};
+#ifdef _WIN32
+  gmtime_s(&tm, &t);
+#else
+  gmtime_r(&t, &tm);
+#endif
+  char buf[64];
+  snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", tm.tm_year + 1900,
+           tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
+           static_cast<int>(ms.count()));
+  return buf;
+}
+} // namespace
+
+MainWindow::MainWindow() : wxFrame(nullptr, wxID_ANY, "") {
+  m_settings.load();
+  if (m_settings.windowWidth() > 0 && m_settings.windowHeight() > 0) {
+    SetSize(m_settings.windowX(), m_settings.windowY(), m_settings.windowWidth(),
+            m_settings.windowHeight());
   }
 
-  if (MainWindow::settings->windowWidth() > 0 &&
-      MainWindow::settings->windowHeight() > 0) {
-    setGeometry(MainWindow::settings->windowX(),
-                MainWindow::settings->windowY(),
-                MainWindow::settings->windowWidth(),
-                MainWindow::settings->windowHeight());
+  setupUi();
+
+  m_proxy = new ScpiProxy(
+      [this](const std::string &command) { return handleProxyQuery(command); });
+  if (m_proxy->start()) {
+    measurement->SetToolTip("Read-only SCPI: 127.0.0.1:5025");
+  } else {
+    std::cerr << "SCPI proxy could not listen: " << m_proxy->errorString() << "\n";
+    measurement->SetToolTip("SCPI proxy unavailable: " + m_proxy->errorString());
   }
 
-  setupUi(this);
-
-  QTimer::singleShot(2000, this, &MainWindow::connectSerial);
+  m_pollTimer.SetOwner(this, ID_POLL_TIMER);
+  Bind(wxEVT_TIMER, &MainWindow::onPollTimer, this, ID_POLL_TIMER);
+  m_autoconnectTimer.SetOwner(this, ID_AUTOCONNECT_TIMER);
+  Bind(wxEVT_TIMER, &MainWindow::onAutoconnectTimer, this, ID_AUTOCONNECT_TIMER);
+  m_autoconnectTimer.Start(2000, wxTIMER_ONE_SHOT);
 }
 
 MainWindow::~MainWindow() {
-  // No need to delete UI elements as they are deleted when parent is deleted
+  m_pollTimer.Stop();
+  m_autoconnectTimer.Stop();
+  delete m_proxy;
   if (m_port) {
-    if (m_port->isOpen()) {
-      m_port->close();
-    }
+    m_port->close();
     delete m_port;
-    m_port = nullptr;
   }
-
-  if (m_timer) {
-    m_timer->stop();
-    delete m_timer;
-    m_timer = nullptr;
-  }
+  m_settings.save();
 }
 
-void MainWindow::setupUi(QMainWindow *MainWindow) {
-  if (MainWindow->objectName().isEmpty())
-    MainWindow->setObjectName("MainWindow");
-  setGeometry(MainWindow::settings->windowX(), MainWindow::settings->windowY(),
-              MainWindow::settings->windowWidth(), MainWindow::settings->windowHeight());
-  //MainWindow->setMinimumSize(QSize(580, 162));
-  MainWindow->setWindowTitle("MacWake OWON XDM-1041 v" APP_VERSION_STRING);
+void MainWindow::setupUi() {
+  SetTitle(wxString("MacWake OWON XDM-1041 v") + APP_VERSION_STRING);
 
-  // ReSharper disable once CppDFAMemoryLeak
-  const auto centralwidget = new QWidget(MainWindow);
-  centralwidget->setObjectName("centralwidget");
+  m_panel = new wxPanel(this, wxID_ANY);
 
-  measurement = new QLabel("not connected", centralwidget);
-  measurement->setObjectName("measurement");
+  measurement =
+      new wxStaticText(m_panel, wxID_ANY, "not connected", wxDefaultPosition,
+                       wxDefaultSize, wxALIGN_RIGHT | wxALIGN_CENTRE_VERTICAL | wxBORDER_SUNKEN);
 
-  QFont font;
-  font.setStyleHint(QFont::Monospace);
-  font.setFamily("monospace");
-  font.setFixedPitch(true);
-  font.setPointSize(48);
-
-#if defined(Q_OS_WIN)
-  font.setFamily("Consolas");
-#elif defined(Q_OS_MAC)
-  font.setFamily("Menlo");
+  wxFont font(48, wxFONTFAMILY_TELETYPE, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL);
+#if defined(__WXMSW__)
+  font.SetFaceName("Consolas");
+#elif defined(__WXOSX__)
+  font.SetFaceName("Menlo");
 #else
-  font.setFamily("Liberation Mono");
+  font.SetFaceName("Liberation Mono");
 #endif
+  measurement->SetFont(font);
+  measurement->Bind(wxEVT_LEFT_UP, &MainWindow::onMeasurementClick, this);
 
-  measurement->setFont(font);
+  auto makeButton = [this](const char *label) {
+    return new wxButton(m_panel, wxID_ANY, wxString::FromUTF8(label));
+  };
+  btn_50_v = makeButton("50 V");
+  btn_auto_v = makeButton("Auto V");
+  btn_short = makeButton("Short");
+  btn_diode = makeButton("Diode");
+  btn_50_kr = makeButton("50 k\xce\xa9");
+  btn_auto_r = makeButton("Auto \xce\xa9");
+  btn_50_f = makeButton("50 \xc2\xb5" "F");
+  btn_auto_f = makeButton("Auto F");
+  btn_freq = makeButton("Hz");
+  btn_period = makeButton("Period");
 
-  measurement->setFrameShape(QFrame::StyledPanel);
-  measurement->setFrameShadow(QFrame::Raised);
-  measurement->setTextFormat(Qt::PlainText);
-  measurement->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-  measurement->setMargin(0);
-  measurement->setContentsMargins(0, 0, 0, 0);
-  measurement->setStyleSheet("QLabel { padding: 0px; margin: 0px; }");
+  btn_50_v->Bind(wxEVT_BUTTON, &MainWindow::onVoltage50V, this);
+  btn_auto_v->Bind(wxEVT_BUTTON, &MainWindow::onVoltageAuto, this);
+  btn_short->Bind(wxEVT_BUTTON, &MainWindow::onShort, this);
+  btn_diode->Bind(wxEVT_BUTTON, &MainWindow::onDiode, this);
+  btn_50_kr->Bind(wxEVT_BUTTON, &MainWindow::onResistance50K, this);
+  btn_auto_r->Bind(wxEVT_BUTTON, &MainWindow::onResistanceAuto, this);
+  btn_50_f->Bind(wxEVT_BUTTON, &MainWindow::onCapacitance50uF, this);
+  btn_auto_f->Bind(wxEVT_BUTTON, &MainWindow::onCapacitanceAuto, this);
+  btn_freq->Bind(wxEVT_BUTTON, &MainWindow::onFrequency, this);
+  btn_period->Bind(wxEVT_BUTTON, &MainWindow::onPeriod, this);
 
-  measurement->installEventFilter(this);
+  m_connect_dialog = new ConnectDialog(this, &m_settings);
 
-  measurement->setMouseTracking(true);
-  measurement->setAttribute(Qt::WA_Hover, true);
-  measurement->setFocusPolicy(Qt::StrongFocus);
+  Bind(wxEVT_SIZE, &MainWindow::onFrameSize, this);
+  Bind(wxEVT_CLOSE_WINDOW, &MainWindow::onClose, this);
 
-  btn_50_v = new QPushButton("50 V", centralwidget);
-  btn_50_v->setObjectName("btn_50_v");
-
-  btn_auto_v = new QPushButton("Auto V", centralwidget);
-  btn_auto_v->setObjectName("btn_auto_v");
-
-  btn_short = new QPushButton("Short", centralwidget);
-  btn_short->setObjectName("btn_short");
-
-  btn_diode = new QPushButton("Diode", centralwidget);
-  btn_diode->setObjectName("btn_diode");
-
-  btn_50_kr = new QPushButton("50 kΩ", centralwidget);
-  btn_50_kr->setObjectName("btn_50_kr");
-
-  btn_auto_r = new QPushButton("Auto Ω", centralwidget);
-  btn_auto_r->setObjectName("btn_auto_r");
-
-  btn_50_f = new QPushButton("50 µF", centralwidget);
-  btn_50_f->setObjectName("btn_50_f");
-
-  btn_auto_f = new QPushButton("Auto F", centralwidget);
-  btn_auto_f->setObjectName("btn_auto_f");
-
-  btn_freq = new QPushButton("Hz", centralwidget);
-  btn_freq->setObjectName("btn_freq");
-
-  btn_period = new QPushButton("Period", centralwidget);
-  btn_period->setObjectName("btn_period");
-
-  connect(btn_50_v, &QPushButton::clicked, this, &MainWindow::onVoltage50V);
-  connect(btn_auto_v, &QPushButton::clicked, this, &MainWindow::onVoltageAuto);
-  connect(btn_short, &QPushButton::clicked, this, &MainWindow::onShort);
-  connect(btn_diode, &QPushButton::clicked, this, &MainWindow::onDiode);
-  connect(btn_50_kr, &QPushButton::clicked, this, &MainWindow::onResistance50K);
-  connect(btn_auto_r, &QPushButton::clicked, this,
-          &MainWindow::onResistanceAuto);
-  connect(btn_50_f, &QPushButton::clicked, this,
-          &MainWindow::onCapacitance50uF);
-  connect(btn_auto_f, &QPushButton::clicked, this,
-          &MainWindow::onCapacitanceAuto);
-  connect(btn_freq, &QPushButton::clicked, this, &MainWindow::onFrequency);
-  connect(btn_period, &QPushButton::clicked, this, &MainWindow::onPeriod);
-
-  setupPositions(MainWindow->width(), MainWindow->height());
-  MainWindow->setCentralWidget(centralwidget);
-
-  m_connect_dialog = new ConnectDialog(this);
-
-  this->m_timer = new QTimer(this);
-  this->m_timer->setInterval(100);
-  this->m_timer->setSingleShot(false);
-  connect(this->m_timer, &QTimer::timeout, this,
-          &MainWindow::updateMeasurement);
+  const wxSize client = GetClientSize();
+  m_panel->SetSize(client);
+  setupPositions(client.GetWidth(), client.GetHeight());
 }
 
-void MainWindow::resizeEvent(QResizeEvent *event) {
-  QMainWindow::resizeEvent(event);
-
-  MainWindow::settings->setWindowWidth(event->size().width());
-  MainWindow::settings->setWindowHeight(event->size().height());
-  setupPositions(event->size().width(), event->size().height());
+void MainWindow::onFrameSize(wxSizeEvent &event) {
+  event.Skip();
+  const wxSize client = GetClientSize();
+  if (m_panel) {
+    m_panel->SetSize(client);
+    setupPositions(client.GetWidth(), client.GetHeight());
+  }
+  m_settings.setWindowWidth(client.GetWidth());
+  m_settings.setWindowHeight(client.GetHeight());
 }
 
-void MainWindow::setupPositions(const int width, const int height) const {
+void MainWindow::onClose(wxCloseEvent &event) {
+  m_pollTimer.Stop();
+  m_autoconnectTimer.Stop();
+  event.Skip(); // proceeds to destructor, which saves settings
+}
+
+void MainWindow::setupPositions(const int width, const int height) {
   const int btn_width = 70;
   const int btn_height = 32;
   const int btnbar_w = 350;
   const int btn_x = (width - btnbar_w) / 2;
-  //std::cerr << "w=" << width << " h=" << height << std::endl;
 
-  auto measureHeight = measurement->fontMetrics().height();
-  // max width
-  measurement->setGeometry(QRect(2, 0, width - 4, measureHeight));
-  const int btngroup_y1 = measurement->y() + measurement->height() + 2;
+  const int measureHeight = measurement->GetCharHeight();
+  measurement->SetSize(2, 0, width - 4, measureHeight);
+  const int btngroup_y1 = measureHeight + 2;
   const int btngroup_y2 = btngroup_y1 + btn_height + 1;
 
-  btn_50_v->setGeometry(QRect(btn_x, btngroup_y1, btn_width, btn_height));
-  btn_auto_v->setGeometry(QRect(btn_x, btngroup_y2, btn_width, btn_height));
-  btn_short->setGeometry(QRect(btn_x + 70, btngroup_y1, btn_width, btn_height));
-  btn_diode->setGeometry(QRect(btn_x + 70, btngroup_y2, btn_width, btn_height));
-  btn_50_kr->setGeometry(
-      QRect(btn_x + 140, btngroup_y1, btn_width, btn_height));
-  btn_auto_r->setGeometry(
-      QRect(btn_x + 140, btngroup_y2, btn_width, btn_height));
-  btn_50_f->setGeometry(QRect(btn_x + 210, btngroup_y1, btn_width, btn_height));
-  btn_auto_f->setGeometry(
-      QRect(btn_x + 210, btngroup_y2, btn_width, btn_height));
-  btn_freq->setGeometry(QRect(btn_x + 280, btngroup_y1, btn_width, btn_height));
-  btn_period->setGeometry(
-      QRect(btn_x + 280, btngroup_y2, btn_width, btn_height));
+  btn_50_v->SetSize(btn_x, btngroup_y1, btn_width, btn_height);
+  btn_auto_v->SetSize(btn_x, btngroup_y2, btn_width, btn_height);
+  btn_short->SetSize(btn_x + 70, btngroup_y1, btn_width, btn_height);
+  btn_diode->SetSize(btn_x + 70, btngroup_y2, btn_width, btn_height);
+  btn_50_kr->SetSize(btn_x + 140, btngroup_y1, btn_width, btn_height);
+  btn_auto_r->SetSize(btn_x + 140, btngroup_y2, btn_width, btn_height);
+  btn_50_f->SetSize(btn_x + 210, btngroup_y1, btn_width, btn_height);
+  btn_auto_f->SetSize(btn_x + 210, btngroup_y2, btn_width, btn_height);
+  btn_freq->SetSize(btn_x + 280, btngroup_y1, btn_width, btn_height);
+  btn_period->SetSize(btn_x + 280, btngroup_y2, btn_width, btn_height);
+  (void)height;
 }
+
+void MainWindow::onAutoconnectTimer(wxTimerEvent &) { connectSerial(); }
+
+void MainWindow::onPollTimer(wxTimerEvent &) { updateMeasurement(); }
 
 void MainWindow::connectSerial() {
   std::cerr << "Connecting to serial port (auto)" << std::endl;
-  if (MainWindow::settings->device().isEmpty()) {
-    this->openConnectDialog();
+  if (m_settings.device().empty()) {
+    openConnectDialog();
   } else {
-    if (!this->m_connect_dialog->tryPortByName(
-            MainWindow::settings->device())) {
-      std::cerr << "Could not connect to serial port "
-                << MainWindow::settings->device().toStdString() << std::endl;
+    if (!m_connect_dialog->tryPortByName(m_settings.device())) {
+      std::cerr << "Could not connect to serial port " << m_settings.device() << std::endl;
     } else {
-      this->m_port = m_connect_dialog->getConfiguredSerialPort();
-      this->onConnect();
+      m_port = m_connect_dialog->getConfiguredSerialPort();
+      onConnect();
     }
   }
 }
 
-QString MainWindow::rateToSerial(Settings::Rate rate) {
+std::string MainWindow::rateToSerial(Settings::Rate rate) {
   switch (rate) {
   case Settings::Rate::SLOW:
     return "S";
@@ -218,211 +276,214 @@ QString MainWindow::rateToSerial(Settings::Rate rate) {
 }
 
 void MainWindow::onConnect() {
-  this->writeSCPIStatement(
-      QString("RATE " + rateToSerial(settings->getRate())));
-
-  this->writeSCPIStatement("SYST:BEEP:STAT OFF");
-  this->onVoltage50V();
-
-  this->m_timer->start();
+  writeSCPIStatement("RATE " + rateToSerial(m_settings.getRate()));
+  writeSCPIStatement("SYST:BEEP:STAT OFF");
+  wxCommandEvent dummy;
+  onVoltage50V(dummy);
+  m_pollTimer.Start(100);
 }
 
 bool MainWindow::openConnectDialog() {
-  if (m_connect_dialog->exec() == QDialog::Accepted) {
-    const auto serialPort = m_connect_dialog->getConfiguredSerialPort();
-    if (serialPort) {
-      MainWindow::settings->setDevice(serialPort->portName());
+  m_pollTimer.Stop();
+  if (m_port) {
+    m_port->close();
+    delete m_port;
+    m_port = nullptr;
+  }
+  m_lastDisplay.clear();
+  m_haveDisplay = false;
+  measurement->SetLabel("not connected");
+  if (m_connect_dialog->ShowModal() == wxID_OK) {
+    SerialPort *port = m_connect_dialog->getConfiguredSerialPort();
+    if (port && port->isOpen()) {
+      m_port = port;
+      m_settings.setDevice(port->portName());
+      m_settings.save();
+      onConnect();
       return true;
     }
-    this->m_port = serialPort;
+    delete port;
   }
   return false;
 }
 
 void MainWindow::updateMeasurement() {
-  if (!this->m_port) {
-    std::cerr << "Port is NULL, stopping timer" << std::endl;
-    this->m_timer->stop();
-    this->m_timer->deleteLater();
-    this->m_timer = nullptr;
+  if (!m_port || !m_port->isOpen()) {
+    m_pollTimer.Stop();
+    measurement->SetLabel("not connected");
+    m_lastDisplay.clear();
+    m_haveDisplay = false;
     return;
   }
-  auto reading = this->writeSCPICommand("MEAS1:SHOW?");
-
-  QString display = reading.replace("\u00a6\u00b8", "Ω Ohm")
-                        .replace("\u00aa\u00cc", "µ")
-                        .replace("\u00a1\u00e6", "°C")
-                        .replace("\u00a8\u0048", "°F");
-  this->measurement->setText(display);
+  std::string reading = writeSCPICommand("MEAS1:SHOW?");
+  if (reading.empty()) {
+    return;
+  }
+  reading = SpaceDigitUnit(reading);
+  m_lastDisplay = reading;
+  m_lastDisplayAt = std::chrono::system_clock::now();
+  m_haveDisplay = true;
+  measurement->SetLabel(wxString::FromUTF8(reading.c_str()));
 }
 
-void MainWindow::onVoltage50V() {
-  this->m_unit = "V";
-  this->writeSCPIStatement("CONF:VOLT:DC 50");
+void MainWindow::onVoltage50V(wxCommandEvent &) {
+  m_unit = "V";
+  m_mode = "VOLT:DC";
+  writeSCPIStatement("CONF:VOLT:DC 50");
 }
 
-void MainWindow::onVoltageAuto() {
-  this->m_unit = "V";
-  this->writeSCPIStatement("CONF:VOLT:DC AUTO");
+void MainWindow::onVoltageAuto(wxCommandEvent &) {
+  m_unit = "V";
+  m_mode = "VOLT:DC";
+  writeSCPIStatement("CONF:VOLT:DC AUTO");
 }
 
-void MainWindow::onShort() {
-  this->m_unit = "Ω";
-  this->writeSCPIStatement("CONF:CONT");
-  if (settings->getBeepShort()) {
-    qDebug() << "Beep resistance: " << MainWindow::settings->getBeepResistance();
-    this->writeSCPIStatement(QString("CONT:THRE ") +
-                        QString::number(MainWindow::settings->getBeepResistance()));
-    this->writeSCPIStatement("SYST:BEEP:STAT ON");
+void MainWindow::onShort(wxCommandEvent &) {
+  m_unit = "\xce\xa9"; // Ohm sign, UTF-8
+  m_mode = "CONT";
+  writeSCPIStatement("CONF:CONT");
+  if (m_settings.getBeepShort()) {
+    std::cerr << "Beep resistance: " << m_settings.getBeepResistance() << "\n";
+    writeSCPIStatement("CONT:THRE " + std::to_string(m_settings.getBeepResistance()));
+    writeSCPIStatement("SYST:BEEP:STAT ON");
   } else {
-    this->writeSCPIStatement("SYST:BEEP:STAT OFF");
+    writeSCPIStatement("SYST:BEEP:STAT OFF");
   }
 }
 
-void MainWindow::onDiode() {
-  if (MainWindow::settings->getBeepDiode()) {
-    this->writeSCPIStatement("SYST:BEEP:STAT ON");
+void MainWindow::onDiode(wxCommandEvent &) {
+  m_unit = "V";
+  m_mode = "DIOD";
+  if (m_settings.getBeepDiode()) {
+    writeSCPIStatement("SYST:BEEP:STAT ON");
   } else {
-    this->writeSCPIStatement("SYST:BEEP:STAT OFF");
+    writeSCPIStatement("SYST:BEEP:STAT OFF");
   }
-  this->writeSCPIStatement("CONF:DIOD");
+  writeSCPIStatement("CONF:DIOD");
 }
 
-void MainWindow::onResistance50K() {
-  this->writeSCPIStatement("CONF:RES 50E3");
+void MainWindow::onResistance50K(wxCommandEvent &) {
+  m_unit = "\xce\xa9";
+  m_mode = "RES";
+  writeSCPIStatement("CONF:RES 50E3");
 }
 
-void MainWindow::onResistanceAuto() {
-  this->m_unit = "Ω";
-  this->writeSCPIStatement("CONF:RES AUTO");
+void MainWindow::onResistanceAuto(wxCommandEvent &) {
+  m_unit = "\xce\xa9";
+  m_mode = "RES";
+  writeSCPIStatement("CONF:RES AUTO");
 }
 
-void MainWindow::onCapacitance50uF() {
-  this->m_unit = "F";
-  this->writeSCPIStatement("CONF:CAP 50E-6");
+void MainWindow::onCapacitance50uF(wxCommandEvent &) {
+  m_unit = "F";
+  m_mode = "CAP";
+  writeSCPIStatement("CONF:CAP 50E-6");
 }
 
-void MainWindow::onCapacitanceAuto() {
-  this->m_unit = "F";
-  this->writeSCPIStatement("CONF:CAP AUTO");
+void MainWindow::onCapacitanceAuto(wxCommandEvent &) {
+  m_unit = "F";
+  m_mode = "CAP";
+  writeSCPIStatement("CONF:CAP AUTO");
 }
 
-void MainWindow::onFrequency() {
-  this->m_unit = "Hz";
-  this->writeSCPIStatement("CONF:FREQ");
+void MainWindow::onFrequency(wxCommandEvent &) {
+  m_unit = "Hz";
+  m_mode = "FREQ";
+  writeSCPIStatement("CONF:FREQ");
 }
 
-void MainWindow::onPeriod() {
-  this->m_unit = "%";
-  this->writeSCPIStatement("CONF:PER");
+void MainWindow::onPeriod(wxCommandEvent &) {
+  m_unit = "s";
+  m_mode = "PER";
+  writeSCPIStatement("CONF:PER");
 }
 
-void MainWindow::onSerialError(const QString &message) {
-  if (this->m_timer) {
-    this->m_timer->stop();
-    qDebug() << "Stopping timer";
-  }
-  qDebug() << "Serial port error: " << message;
-  std::cerr << "Serial port error, closing\n";
-  if (this->m_port) {
-    if (this->m_port->isOpen()) {
-      this->m_port->close();
-    }
-    delete this->m_port;
-    this->m_port = nullptr;
-  }
-}
-
-QString MainWindow::readSCPI() const {
+std::string MainWindow::readSCPI() {
+  std::lock_guard<std::mutex> lock(m_serialMutex);
   if (!m_port || !m_port->isOpen()) {
-    qDebug() << "Serial port not open";
+    std::cerr << "Serial port not open" << std::endl;
     return {};
   }
-
   if (!m_port->waitForReadyRead(500)) {
-    qDebug() << "Serial port not ready";
+    std::cerr << "Serial port not ready" << std::endl;
     return {};
   }
+  std::string line;
+  if (!m_port->readLine(line, 100)) {
+    std::cerr << "Read timeout occurred" << std::endl;
+    return {};
+  }
+  FixMeterEncoding(line);
+  return Trim(line);
+}
 
-  QByteArray responseData;
-  QElapsedTimer timer;
-  timer.start();
+void MainWindow::writeSCPIStatement(const std::string &command) {
+  std::lock_guard<std::mutex> lock(m_serialMutex);
+  if (!m_port || !m_port->isOpen()) {
+    std::cerr << "No port open, refusing writeSCPI\n";
+    return;
+  }
+  m_port->write(command + "\r\n");
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+}
 
-  while (!responseData.contains('\n')) {
-    if (timer.elapsed() > 100) {
-      qDebug() << "Read timeout occurred";
-      // emit onSerialError("readSCPI timeout");
+std::string MainWindow::writeSCPICommand(const std::string &command) {
+  // writeSCPIStatement and readSCPI each take the mutex; kept as two steps
+  // like the Qt version (write, 10ms pause, then read).
+  writeSCPIStatement(command);
+  {
+    std::lock_guard<std::mutex> lock(m_serialMutex);
+    if (!m_port || !m_port->isOpen()) {
       return {};
     }
-
-    if (m_port->bytesAvailable() > 0) {
-      responseData.append(m_port->readAll());
-    } else {
-      QThread::msleep(10);
-    }
   }
-
-  QString response = QString::fromLatin1(responseData);
-  QByteArray data = response.toLatin1();
-
-  if (data.contains(QByteArray("\xa6\xb8", 2))) {
-    data.replace(QByteArray("\xa6\xb8", 2), "Ω");
-  }
-  if (data.contains(QByteArray("\xa6\xcc", 2))) {
-    data.replace(QByteArray("\xa6\xcc", 2), "µ");
-  }
-  if (data.contains(QByteArray("\xa1\xe6", 2))) {
-    data.replace(QByteArray("\xa1\xe6", 2), "°C");
-  }
-  if (data.contains(QByteArray("\xa8\x48", 2))) {
-    data.replace(QByteArray("\xa8\x48", 2), "°F");
-  }
-  response = QString::fromUtf8(data);
-  QRegularExpression re("([-+]?[0-9]*\\.?[0-9]+)([^0-9.]+)");
-  response = response.replace(re, "\\1 \\2");
-
-  response = response.replace("  ", " ");
-
-  return response;
-}
-
-void MainWindow::writeSCPIStatement(const QString &command) const {
-  if (!this->m_port) {
-    std::cerr << "No port open, refusing writeSCPI\n";
-    return;
-  }
-  // qDebug() << "Writing " << command;
-  this->m_port->write(QString(command + "\r\n").toLocal8Bit());
-  this->m_port->flush();
-  QThread::msleep(10);
-}
-
-QString MainWindow::writeSCPICommand(const QString &command) const {
-  if (!this->m_port) {
-    std::cerr << "No port open, refusing writeSCPI\n";
-    return nullptr;
-  }
-  // qDebug() << "Writing " << command;
-  this->m_port->write(QString(command + "\r\n").toLocal8Bit());
-  this->m_port->flush();
-  QThread::msleep(10);
   return readSCPI();
 }
 
-bool MainWindow::eventFilter(QObject *obj, QEvent *event) {
-  if (obj == measurement) {
-    if (event->type() == QEvent::MouseButtonRelease) {
-      if (const QMouseEvent *mouseEvent = dynamic_cast<QMouseEvent *>(event);
-          mouseEvent->button() == Qt::LeftButton) {
-        onMeasurementClicked();
-        return true;
-      }
-    }
+std::string MainWindow::handleProxyQuery(const std::string &command) {
+  std::unique_lock<std::mutex> lock(m_serialMutex);
+  const bool connected = m_port && m_port->isOpen();
+  const std::string port = connected ? m_port->portName() : "";
+  const std::string mode = connected ? m_mode : "";
+  const std::string unit = connected ? m_unit : "";
+  const std::string display = connected ? m_lastDisplay : "";
+  const std::string displayAt =
+      (connected && m_haveDisplay) ? ToIsoUtcMs(m_lastDisplayAt) : "";
+  if (command == "PROX:STATE?") {
+    return "{\"connected\":" + std::string(connected ? "true" : "false") + R"(,"port":")" +
+           JsonEscape(port) + R"(","mode":")" + JsonEscape(mode) +
+           R"(","mode_source":"app","unit":")" + JsonEscape(unit) + R"(","display":")" +
+           JsonEscape(display) + R"(","display_at":")" + displayAt + "\"}";
   }
-  return QMainWindow::eventFilter(obj, event);
+  if (!connected) {
+    return "ERR:DISCONNECTED";
+  }
+  std::string meterCommand = command;
+  if (command == "READ?" || command == "PROX:READ?") {
+    meterCommand = "MEAS1?";
+  }
+  // Snapshot for the response while still holding the lock; the blocking
+  // meter I/O below runs unlocked so the poll timer is not stalled.
+  const std::string snapDisplay = m_lastDisplay;
+  const bool snapHaveDisplay = m_haveDisplay;
+  const std::string snapDisplayAt = snapHaveDisplay ? ToIsoUtcMs(m_lastDisplayAt) : "";
+  lock.unlock();
+  std::string response = writeSCPICommand(meterCommand);
+  if (response.empty()) {
+    return "ERR:TIMEOUT";
+  }
+  if (command == "PROX:READ?") {
+    const std::string now = ToIsoUtcMs(std::chrono::system_clock::now());
+    return R"({"connected":true,"port":")" + JsonEscape(port) + R"(","mode":")" +
+           JsonEscape(mode) + R"(","mode_source":"app","unit":")" + JsonEscape(unit) +
+           R"(","display":")" + JsonEscape(snapDisplay) + R"(","display_at":")" +
+           snapDisplayAt + R"(","value":")" + JsonEscape(response) +
+           R"(","measured_at":")" + now + "\"}";
+  }
+  return response;
 }
 
-void MainWindow::onMeasurementClicked() {
-  MainWindow::settings->save();
+void MainWindow::onMeasurementClick(wxMouseEvent &) {
+  m_settings.save();
   openConnectDialog();
 }

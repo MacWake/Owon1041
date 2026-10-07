@@ -1,91 +1,82 @@
-#ifndef MAINWINDOW_H
-#define MAINWINDOW_H
+#pragma once
 
-#include <QLabel>
-#include <QMainWindow>
+#include <wx/wx.h>
 
-#include "ConnectDialog.h"
+#include <chrono>
+#include <mutex>
+#include <string>
+
+#include "ScpiProxy.h"
+#include "SerialPort.h"
 #include "Settings.h"
 
-class MainWindow final : public QMainWindow {
-  Q_OBJECT
+class ConnectDialog;
 
+class MainWindow final : public wxFrame {
 public:
-  explicit MainWindow(QWidget *parent = nullptr);
-
+  explicit MainWindow();
   ~MainWindow() override;
 
-  void setupUi(QMainWindow *MainWindow);
-
-  static Settings *settings;
-
-protected:
-  void resizeEvent(QResizeEvent *event) override;
-
-  void setupPositions(int width, int height) const;
-
-private slots:
-  void onVoltage50V();
-
-  void onVoltageAuto();
-
-  void onShort();
-
-  void onDiode();
-
-  void onResistance50K();
-
-  void onResistanceAuto();
-
-  void onCapacitance50uF();
-
-  void onCapacitanceAuto();
-
-  void onFrequency();
-
-  void onPeriod();
-
-  void onSerialError(const QString &message);
-
-  [[nodiscard]] QString readSCPI() const;
-
-  void writeSCPIStatement(const QString &command) const;
-
-  QString writeSCPICommand(const QString &command) const; // NOLINT(*-use-nodiscard)
-
-  bool eventFilter(QObject *obj, QEvent *event) override;
-
-  void onMeasurementClicked();
-
-  void updateMeasurement(); // Make sure this exists and is declared as a slot
-
 private:
-  // UI elements as member variables (excluding centralwidget)
-  QLabel *measurement;
-  QPushButton *btn_50_v;
-  QPushButton *btn_auto_v;
-  QPushButton *btn_short;
-  QPushButton *btn_diode;
-  QPushButton *btn_50_kr;
-  QPushButton *btn_auto_r;
-  QPushButton *btn_50_f;
-  QPushButton *btn_auto_f;
-  QPushButton *btn_freq;
-  QPushButton *btn_period;
+  void setupUi();
+  void setupPositions(int width, int height);
 
-  ConnectDialog *m_connect_dialog;
-  QString m_unit;
+  void onFrameSize(wxSizeEvent &event);
+  void onClose(wxCloseEvent &event);
+  void onAutoconnectTimer(wxTimerEvent &event);
+  void onPollTimer(wxTimerEvent &event);
+  void onMeasurementClick(wxMouseEvent &event);
+
+  void onVoltage50V(wxCommandEvent &event);
+  void onVoltageAuto(wxCommandEvent &event);
+  void onShort(wxCommandEvent &event);
+  void onDiode(wxCommandEvent &event);
+  void onResistance50K(wxCommandEvent &event);
+  void onResistanceAuto(wxCommandEvent &event);
+  void onCapacitance50uF(wxCommandEvent &event);
+  void onCapacitanceAuto(wxCommandEvent &event);
+  void onFrequency(wxCommandEvent &event);
+  void onPeriod(wxCommandEvent &event);
 
   void connectSerial();
-
-  static QString rateToSerial(Settings::Rate rate);
-
   void onConnect();
-
   bool openConnectDialog();
+  void updateMeasurement();
 
-  QTimer *m_timer = nullptr;
-  QSerialPort *m_port = nullptr;
+  static std::string rateToSerial(Settings::Rate rate);
+
+  // Blocking meter I/O; serialized by m_serialMutex because the SCPI proxy
+  // handler runs on worker threads while the poll timer runs on the GUI thread.
+  std::string readSCPI();
+  void writeSCPIStatement(const std::string &command);
+  std::string writeSCPICommand(const std::string &command);
+  std::string handleProxyQuery(const std::string &command);
+
+  Settings m_settings;
+  wxPanel *m_panel = nullptr;
+  wxStaticText *measurement = nullptr;
+  wxButton *btn_50_v = nullptr;
+  wxButton *btn_auto_v = nullptr;
+  wxButton *btn_short = nullptr;
+  wxButton *btn_diode = nullptr;
+  wxButton *btn_50_kr = nullptr;
+  wxButton *btn_auto_r = nullptr;
+  wxButton *btn_50_f = nullptr;
+  wxButton *btn_auto_f = nullptr;
+  wxButton *btn_freq = nullptr;
+  wxButton *btn_period = nullptr;
+
+  ConnectDialog *m_connect_dialog = nullptr;
+  wxTimer m_pollTimer;
+  wxTimer m_autoconnectTimer;
+
+  std::mutex m_serialMutex;
+  SerialPort *m_port = nullptr;
+  ScpiProxy *m_proxy = nullptr;
+
+  std::string m_unit;
+  std::string m_mode;
+  std::string m_lastDisplay;
+  std::chrono::system_clock::time_point m_lastDisplayAt{};
+  bool m_haveDisplay = false;
 };
-
-#endif // MAINWINDOW_H
