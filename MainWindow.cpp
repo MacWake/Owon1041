@@ -95,7 +95,7 @@ std::string JsonEscape(const std::string &s) {
   return out;
 }
 
-std::string ToIsoUtcMs(std::chrono::system_clock::time_point tp) {
+std::string ToIsoUtcMs(const std::chrono::system_clock::time_point tp) {
   const auto ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()) % 1000;
   std::time_t t = std::chrono::system_clock::to_time_t(tp);
@@ -105,7 +105,7 @@ std::string ToIsoUtcMs(std::chrono::system_clock::time_point tp) {
 #else
   gmtime_r(&t, &tm);
 #endif
-  char buf[32];
+  char buf[64];
   snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", tm.tm_year + 1900,
            tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
            static_cast<int>(ms.count()));
@@ -450,10 +450,10 @@ std::string MainWindow::handleProxyQuery(const std::string &command) {
   const std::string displayAt =
       (connected && m_haveDisplay) ? ToIsoUtcMs(m_lastDisplayAt) : "";
   if (command == "PROX:STATE?") {
-    return "{\"connected\":" + std::string(connected ? "true" : "false") + ",\"port\":\"" +
-           JsonEscape(port) + "\",\"mode\":\"" + JsonEscape(mode) +
-           "\",\"mode_source\":\"app\",\"unit\":\"" + JsonEscape(unit) + "\",\"display\":\"" +
-           JsonEscape(display) + "\",\"display_at\":\"" + displayAt + "\"}";
+    return "{\"connected\":" + std::string(connected ? "true" : "false") + R"(,"port":")" +
+           JsonEscape(port) + R"(","mode":")" + JsonEscape(mode) +
+           R"(","mode_source":"app","unit":")" + JsonEscape(unit) + R"(","display":")" +
+           JsonEscape(display) + R"(","display_at":")" + displayAt + "\"}";
   }
   if (!connected) {
     return "ERR:DISCONNECTED";
@@ -468,17 +468,17 @@ std::string MainWindow::handleProxyQuery(const std::string &command) {
   const bool snapHaveDisplay = m_haveDisplay;
   const std::string snapDisplayAt = snapHaveDisplay ? ToIsoUtcMs(m_lastDisplayAt) : "";
   lock.unlock();
-  const std::string response = writeSCPICommand(meterCommand);
+  std::string response = writeSCPICommand(meterCommand);
   if (response.empty()) {
     return "ERR:TIMEOUT";
   }
   if (command == "PROX:READ?") {
     const std::string now = ToIsoUtcMs(std::chrono::system_clock::now());
-    return "{\"connected\":true,\"port\":\"" + JsonEscape(port) + "\",\"mode\":\"" +
-           JsonEscape(mode) + "\",\"mode_source\":\"app\",\"unit\":\"" + JsonEscape(unit) +
-           "\",\"display\":\"" + JsonEscape(snapDisplay) + "\",\"display_at\":\"" +
-           snapDisplayAt + "\",\"value\":\"" + JsonEscape(response) +
-           "\",\"measured_at\":\"" + now + "\"}";
+    return R"({"connected":true,"port":")" + JsonEscape(port) + R"(","mode":")" +
+           JsonEscape(mode) + R"(","mode_source":"app","unit":")" + JsonEscape(unit) +
+           R"(","display":")" + JsonEscape(snapDisplay) + R"(","display_at":")" +
+           snapDisplayAt + R"(","value":")" + JsonEscape(response) +
+           R"(","measured_at":")" + now + "\"}";
   }
   return response;
 }
