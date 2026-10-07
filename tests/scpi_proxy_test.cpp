@@ -1,6 +1,7 @@
 // Qt-free test for the BSD-socket ScpiProxy. Uses raw TCP sockets.
 #include "../ScpiProxy.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <functional>
