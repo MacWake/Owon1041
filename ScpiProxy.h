@@ -1,33 +1,50 @@
-#ifndef SCPIPROXY_H
-#define SCPIPROXY_H
+#pragma once
 
-#include <QHash>
-#include <QObject>
-#include <QTcpServer>
+#include <atomic>
+#include <cstdint>
 #include <functional>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
-class QTcpSocket;
+#ifdef _WIN32
+#include <winsock2.h>
+using socket_t = SOCKET;
+#else
+using socket_t = int;
+#endif
 
-// A loopback-only, line-oriented SCPI query endpoint. The handler runs on the
-// GUI thread, which also owns the serial port, so replies cannot interleave.
-class ScpiProxy final : public QObject {
+// Loopback-only, line-oriented SCPI query endpoint. The handler runs on
+// worker threads; it must be thread-safe (MainWindow serializes meter access
+// with a mutex because the GUI timer shares the port).
+class ScpiProxy final {
 public:
-  using QueryHandler = std::function<QByteArray(const QByteArray &)>;
+  using QueryHandler = std::function<std::string(const std::string &)>;
 
-  explicit ScpiProxy(QueryHandler handler, QObject *parent = nullptr);
+  explicit ScpiProxy(QueryHandler handler);
+  ~ScpiProxy();
 
-  bool start(quint16 port = 5025);
-  QString errorString() const;
-  quint16 serverPort() const;
+  ScpiProxy(const ScpiProxy &) = delete;
+  ScpiProxy &operator=(const ScpiProxy &) = delete;
+
+  bool start(std::uint16_t port = 5025);
+  void stop();
+  std::string errorString() const { return m_error; }
+  std::uint16_t serverPort() const { return m_port; }
 
 private:
-  void acceptConnections();
-  void readClient(QTcpSocket *socket);
-  void handleLine(QTcpSocket *socket, const QByteArray &line);
+  void acceptLoop();
+  void serveClient(socket_t fd);
+  void closeListenSocket();
 
-  QTcpServer m_server;
-  QHash<QTcpSocket *, QByteArray> m_buffers;
   QueryHandler m_handler;
+  std::thread m_acceptThread;
+  std::mutex m_mutex;
+  std::vector<std::thread> m_clientThreads;
+  std::vector<socket_t> m_clientFds;
+  std::atomic<bool> m_running{false};
+  socket_t m_listenFd;
+  std::string m_error;
+  std::uint16_t m_port = 0;
 };
-
-#endif // SCPIPROXY_H

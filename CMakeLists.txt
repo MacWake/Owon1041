@@ -30,50 +30,33 @@ if(APPLE)
 endif()
 
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Try to find Qt in common installation paths
-set(QT_COMMON_PATHS
-    # Qt6 paths
-    "/opt/homebrew/opt/qt@6"
-    "/opt/homebrew/opt/qt6"
-    "/usr/local/opt/qt@6"
-    "/usr/local/opt/qt6"
-    "/usr/local/qt6"
-    "C:/Qt/6.8.2/msvc2022_64"
-        "C:/Qt/6.10.2/msvc2022_64"
-        "C:/Qt/6.10.2/mingw_64"
-        "C:/Qt/6.5.0/msvc2019_64"
-        "C:/Qt/6.5.0/mingw_64"
-        "C:/Qt/6.*/msvc2022_64"
-        "C:/Qt/6.*/mingw_64"
-)
+# wxWidgets comes from the third_party/wxwidgets submodule (static build).
+# The shared Forgejo build will replace this once available; until then pass
+# -DOWON_USE_SYSTEM_WX=ON to link a system-installed wxWidgets instead.
+option(OWON_USE_SYSTEM_WX "Use system-installed wxWidgets instead of the git submodule" OFF)
 
-# Find the first valid Qt path
-foreach(QT_PATH ${QT_COMMON_PATHS})
-    if(EXISTS "${QT_PATH}")
-        list(APPEND CMAKE_PREFIX_PATH "${QT_PATH}")
-        message(STATUS "Found Qt at: ${QT_PATH}")
-        break()
+if(OWON_USE_SYSTEM_WX)
+    find_package(wxWidgets REQUIRED COMPONENTS core base)
+    include(${wxWidgets_USE_FILE})
+    set(WX_LINK_LIBS ${wxWidgets_LIBRARIES})
+else()
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/wxwidgets/CMakeLists.txt")
+        message(FATAL_ERROR
+            "wxWidgets submodule missing at third_party/wxwidgets. "
+            "Run: git submodule update --init third_party/wxwidgets")
     endif()
-endforeach()
-
-# Try to find Qt6 first, fall back to Qt5 if not found
-set(QT_VERSION_MAJOR 6)
-find_package(Qt${QT_VERSION_MAJOR}
-    COMPONENTS
-        Core
-        Gui
-        Widgets
-        SerialPort
-        Network
-    REQUIRED
-)
-
-if(Qt${QT_VERSION_MAJOR}_VERSION VERSION_GREATER_EQUAL "6.3")
-    qt_standard_project_setup()
+    # Static, minimal-surface build of the submodule.
+    set(wxBUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(wxBUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+    set(wxBUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(wxBUILD_DEMOS OFF CACHE BOOL "" FORCE)
+    set(wxBUILD_INSTALL OFF CACHE BOOL "" FORCE)
+    set(wxUSE_WEBVIEW OFF CACHE BOOL "" FORCE)
+    set(wxUSE_MEDIACTRL OFF CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/wxwidgets)
+    set(WX_LINK_LIBS wx::core wx::base)
 endif()
 
 # Define macOS bundle properties
@@ -92,7 +75,10 @@ if(APPLE)
     set(APP_ICON_MACOSX ${CMAKE_CURRENT_SOURCE_DIR}/Owon.icns)
     set_source_files_properties(${APP_ICON_MACOSX} PROPERTIES
         MACOSX_PACKAGE_LOCATION "Resources")
-    set(PLATFORM_SPECIFIC_ICON_FILES ${APP_ICON_MACOSX})
+    set(APP_PNG ${CMAKE_CURRENT_SOURCE_DIR}/Owon1041.png)
+    set_source_files_properties(${APP_PNG} PROPERTIES
+        MACOSX_PACKAGE_LOCATION "Resources")
+    set(PLATFORM_SPECIFIC_ICON_FILES ${APP_ICON_MACOSX} ${APP_PNG})
 elseif(WIN32)
     # Windows icon (requires a resource file)
     set(APP_ICON_WINDOWS "${CMAKE_CURRENT_SOURCE_DIR}/Owon1041.rc")
@@ -102,8 +88,7 @@ elseif(UNIX AND NOT APPLE)
     set(PLATFORM_SPECIFIC_ICON_FILES "")
 endif()
 
-# Add executable with platform-specific resources
-add_executable(Owon1041 
+set(OWON_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/MainWindow.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/MainWindow.h
@@ -113,17 +98,20 @@ add_executable(Owon1041
     ${CMAKE_CURRENT_SOURCE_DIR}/ConnectDialog.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ScpiProxy.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ScpiProxy.h
-    resources.qrc
+    ${CMAKE_CURRENT_SOURCE_DIR}/SerialPort.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/SerialPort.h
+)
+
+# Add executable with platform-specific resources
+add_executable(Owon1041
+    ${OWON_SOURCES}
     ${PLATFORM_SPECIFIC_ICON_FILES}
 )
 
-target_link_libraries(Owon1041
-    Qt${QT_VERSION_MAJOR}::Core
-    Qt${QT_VERSION_MAJOR}::Gui
-    Qt${QT_VERSION_MAJOR}::Widgets
-    Qt${QT_VERSION_MAJOR}::SerialPort
-    Qt${QT_VERSION_MAJOR}::Network
-)
+target_link_libraries(Owon1041 PRIVATE ${WX_LINK_LIBS})
+if(WIN32)
+    target_link_libraries(Owon1041 PRIVATE ws2_32)
+endif()
 
 include(CTest)
 if(BUILD_TESTING)
@@ -132,10 +120,10 @@ if(BUILD_TESTING)
         ScpiProxy.cpp
         ScpiProxy.h
     )
-    target_link_libraries(scpi_proxy_test
-        Qt${QT_VERSION_MAJOR}::Core
-        Qt${QT_VERSION_MAJOR}::Network
-    )
+    target_include_directories(scpi_proxy_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    if(WIN32)
+        target_link_libraries(scpi_proxy_test PRIVATE ws2_32)
+    endif()
     add_test(NAME scpi_proxy_test COMMAND scpi_proxy_test)
 endif()
 
@@ -152,25 +140,20 @@ if(APPLE)
         MACOSX_BUNDLE_INFO_STRING "${MACOSX_BUNDLE_INFO_STRING}"
         MACOSX_BUNDLE_ICON_FILE "${MACOSX_BUNDLE_ICON_FILE}"
     )
-    
-    # Set High DPI support
-    target_compile_definitions(Owon1041 PRIVATE
-        "QT_MAC_WANTS_LAYER=1"
-    )
 elseif(UNIX AND NOT APPLE)
     # Installation paths for Linux
     include(GNUInstallDirs)
-    
+
     # Install the executable
     install(TARGETS Owon1041
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
-    
+
     # Install desktop file
     install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/linux/owon1041.desktop
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications
     )
-    
+
     # Install icons in various sizes
     install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/linux/icons/16x16/owon1041.png
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/16x16/apps
@@ -190,7 +173,7 @@ elseif(UNIX AND NOT APPLE)
     install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/linux/icons/256x256/owon1041.png
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/256x256/apps
     )
-    
+
     # Install SVG icon (if exists)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/linux/icons/scalable/owon1041.svg")
         install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/linux/icons/scalable/owon1041.svg
@@ -203,16 +186,6 @@ elseif(WIN32)
     install(TARGETS Owon1041
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
-    
-    # Generate Qt deployment script for Windows
-    if(Qt${QT_VERSION_MAJOR}_VERSION VERSION_GREATER_EQUAL "6.3")
-        qt_generate_deploy_app_script(
-            TARGET Owon1041
-            OUTPUT_SCRIPT deploy_script
-            NO_TRANSLATIONS
-        )
-        install(SCRIPT ${deploy_script})
-    endif()
 endif()
 
 # CPack configuration
@@ -238,8 +211,9 @@ if(WIN32)
 elseif(UNIX AND NOT APPLE)
     set(CPACK_GENERATOR "DEB")
     set(CPACK_DEBIAN_PACKAGE_MAINTAINER "MacWake <info@macwake.de>")
-    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6widgets6, libqt6serialport6, libqt6gui6, libqt6core6")
-    # For distinct Debian/Ubuntu packages, we might need to adjust dependencies or names in GHA
+    # wxWidgets is linked statically; only the desktop toolkit stays shared,
+    # and its package name differs per distro (libgtk-3-0 vs libgtk-3-0t64),
+    # so no hard dependency is declared here.
     set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
     set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
     set(CPACK_DEBIAN_PACKAGE_VERSION "${FULL_APP_VERSION}")

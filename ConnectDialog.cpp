@@ -1,223 +1,200 @@
 // ReSharper disable CppDFAMemoryLeak
 #include "ConnectDialog.h"
-#include "MainWindow.h" // For MainWindow::settings
-#include "Settings.h"   // For Settings::Rate
 
-#include <QButtonGroup> // Ensure this is included (already in .h)
-#include <QCheckBox>
-#include <QComboBox>
-#include <QDebug>
-#include <QDialogButtonBox>
-#include <QFormLayout>
-#include <QGroupBox>
-#include <QHBoxLayout> // Added for radio button layout
-#include <QLabel>
-#include <QLineEdit>
-#include <QMessageBox>
-#include <QPushButton>
-#include <QRadioButton> // Ensure this is included (already in .h)
-#include <QSerialPortInfo>
-#include <QVBoxLayout>
 #include <iostream>
+#include <sstream>
+#include <wx/combobox.h>
+#include <wx/statline.h>
 
-ConnectDialog::ConnectDialog(QWidget *parent)
-    : QDialog(parent), serialPort(nullptr) {
-  setWindowTitle("Serial Port Connection");
+namespace {
+void SetStatus(wxStaticText *label, const std::string &text, const wxColour &color) {
+  label->SetLabel(wxString::FromUTF8(text.c_str()));
+  label->SetForegroundColour(color);
+}
+
+std::vector<std::string> SplitComma(const std::string &s) {
+  std::vector<std::string> parts;
+  std::string cur;
+  for (char c : s) {
+    if (c == ',') {
+      parts.push_back(cur);
+      cur.clear();
+    } else {
+      cur.push_back(c);
+    }
+  }
+  parts.push_back(cur);
+  for (auto &p : parts) {
+    const auto b = p.find_first_not_of(" \t\r\n");
+    const auto e = p.find_last_not_of(" \t\r\n");
+    p = (b == std::string::npos) ? "" : p.substr(b, e - b + 1);
+  }
+  return parts;
+}
+} // namespace
+
+ConnectDialog::ConnectDialog(wxWindow *parent, Settings *settings)
+    : wxDialog(parent, wxID_ANY, "Serial Port Connection", wxDefaultPosition,
+               wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER),
+      m_settings(settings) {
   setupUi();
   populatePortsList();
   loadSettings(); // Load settings when dialog is created
 }
 
-ConnectDialog::~ConnectDialog() {
-  // Port will be owned by the caller or deleted when connection failed
-}
+ConnectDialog::~ConnectDialog() { delete serialPort; }
 
 void ConnectDialog::setupUi() {
-  // Main layout
-  auto mainLayout = new QVBoxLayout(this);
+  auto *mainSizer = new wxBoxSizer(wxVERTICAL);
 
-  // Defaults group
-  auto defaultsGroupBox = new QGroupBox("Defaults");
-  auto defaultsLayout = new QFormLayout(defaultsGroupBox);
+  auto *defaultsBox = new wxStaticBoxSizer(wxVERTICAL, this, "Defaults");
+  m_beep_short = new wxCheckBox(this, wxID_ANY, "Beep in SHORT mode");
+  defaultsBox->Add(m_beep_short, 0, wxALL, 4);
 
-  m_beep_short = new QCheckBox("Beep in SHORT mode");
-  // Connect this checkbox to settings load/save if needed
-  defaultsLayout->addWidget(m_beep_short);
+  auto *thresholdSizer = new wxBoxSizer(wxHORIZONTAL);
+  thresholdSizer->Add(new wxStaticText(this, wxID_ANY, "Threshold (\xce\xa9):"), 0,
+                      wxALIGN_CENTRE_VERTICAL | wxRIGHT, 6);
+  m_short_threshold = new wxTextCtrl(this, wxID_ANY, "", wxDefaultPosition,
+                                     wxSize(60, -1));
+  thresholdSizer->Add(m_short_threshold, 0, wxALIGN_CENTRE_VERTICAL);
+  defaultsBox->Add(thresholdSizer, 0, wxALL, 4);
 
-  m_short_threshold = new QLineEdit(this);
-  m_short_threshold->setFixedWidth(50); // Increased width a bit
-  // Connect this line edit to settings load/save if needed
-  defaultsLayout->addRow("Threshold (Ω):", m_short_threshold);
+  m_beep_diode = new wxCheckBox(this, wxID_ANY, "Beep in DIODE mode");
+  defaultsBox->Add(m_beep_diode, 0, wxALL, 4);
 
-  m_beep_diode = new QCheckBox("Beep in DIODE mode");
-  // Connect this checkbox to settings load/save if needed
-  defaultsLayout->addWidget(m_beep_diode);
+  const wxString rates[] = {"Slow", "Medium", "Fast"};
+  m_rateBox = new wxRadioBox(this, wxID_ANY, "Measurement Rate", wxDefaultPosition,
+                             wxDefaultSize, 3, rates, 3, wxRA_SPECIFY_COLS);
+  defaultsBox->Add(m_rateBox, 0, wxEXPAND | wxALL, 4);
+  mainSizer->Add(defaultsBox, 0, wxEXPAND | wxALL, 6);
 
-  // Rate selection group
-  rateGroupBox = new QGroupBox("Measurement Rate");
-  auto rateLayout =
-      new QHBoxLayout(); // Use QHBoxLayout for horizontal radio buttons
-  slowRateButton = new QRadioButton("Slow");
-  mediumRateButton = new QRadioButton("Medium");
-  fastRateButton = new QRadioButton("Fast");
+  auto *portBox = new wxStaticBoxSizer(wxHORIZONTAL, this, "Port Selection");
+  portComboBox = new wxComboBox(this, wxID_ANY, "", wxDefaultPosition,
+                                wxDefaultSize, 0, nullptr, wxCB_READONLY);
+  portBox->Add(portComboBox, 1, wxEXPAND | wxALL, 4);
+  refreshButton = new wxButton(this, wxID_ANY, "Refresh");
+  portBox->Add(refreshButton, 0, wxALL, 4);
+  mainSizer->Add(portBox, 0, wxEXPAND | wxLEFT | wxRIGHT, 6);
 
-  rateButtonGroup = new QButtonGroup(this);
-  rateButtonGroup->addButton(slowRateButton,
-                             static_cast<int>(Settings::Rate::SLOW));
-  rateButtonGroup->addButton(mediumRateButton,
-                             static_cast<int>(Settings::Rate::MEDIUM));
-  rateButtonGroup->addButton(fastRateButton,
-                             static_cast<int>(Settings::Rate::FAST));
+  statusLabel = new wxStaticText(this, wxID_ANY, "Select a port and connect.");
+  statusLabel->SetForegroundColour(*wxLIGHT_GREY);
+  mainSizer->Add(statusLabel, 0, wxEXPAND | wxALL, 6);
 
-  rateLayout->addWidget(slowRateButton);
-  rateLayout->addWidget(mediumRateButton);
-  rateLayout->addWidget(fastRateButton);
-  rateGroupBox->setLayout(rateLayout);
-  defaultsLayout->addRow(rateGroupBox); // Add rate group to defaultsLayout
+  auto *buttonSizer = new wxBoxSizer(wxHORIZONTAL);
+  buttonSizer->AddStretchSpacer(1);
+  connectButton = new wxButton(this, wxID_ANY, "Connect");
+  connectButton->SetDefault();
+  auto *tryButton = new wxButton(this, wxID_ANY, "Test");
+  auto *cancelButton = new wxButton(this, wxID_CANCEL, "Cancel");
+  buttonSizer->Add(tryButton, 0, wxRIGHT, 6);
+  buttonSizer->Add(cancelButton, 0, wxRIGHT, 6);
+  buttonSizer->Add(connectButton, 0);
+  mainSizer->Add(buttonSizer, 0, wxEXPAND | wxALL, 6);
 
-  // Port selection group
-  auto portGroupBox = new QGroupBox("Port Selection");
-  auto portLayout = new QHBoxLayout(portGroupBox);
+  SetSizerAndFit(mainSizer);
 
-  portComboBox = new QComboBox();
-  refreshButton = new QPushButton("Refresh");
-
-  portLayout->addWidget(portComboBox);
-  portLayout->addWidget(refreshButton);
-
-  // Serial configuration group (currently empty, but kept for structure)
-  // auto configGroupBox = new QGroupBox("Port Configuration");
-
-  // Status label
-  statusLabel = new QLabel("Select a port and connect."); // Initial message
-  statusLabel->setStyleSheet("QLabel { color: gray; }");
-
-  // Buttons
-  auto buttonBox = new QDialogButtonBox();
-  connectButton = new QPushButton("Connect");
-  const auto tryButton = new QPushButton("Test");
-  cancelButton = new QPushButton("Cancel");
-  buttonBox->addButton(connectButton, QDialogButtonBox::AcceptRole);
-  buttonBox->addButton(tryButton, QDialogButtonBox::ActionRole);
-  buttonBox->addButton(cancelButton, QDialogButtonBox::RejectRole);
-
-  // Add all widgets to main layout
-  mainLayout->addWidget(defaultsGroupBox);
-  mainLayout->addWidget(portGroupBox);
-  // mainLayout->addWidget(configGroupBox); // configGroupBox is currently empty
-  mainLayout->addWidget(statusLabel);
-  mainLayout->addWidget(buttonBox);
-
-  // Connect signals and slots
-  connect(refreshButton, &QPushButton::clicked, this,
-          &ConnectDialog::refreshPorts);
-  connect(tryButton, &QPushButton::clicked, this, &ConnectDialog::tryPort);
-  connect(connectButton, &QPushButton::clicked, this,
-          &ConnectDialog::connectToPort);
-  connect(cancelButton, &QPushButton::clicked, this, &QDialog::reject);
-  connect(rateButtonGroup, QOverload<int>::of(&QButtonGroup::idClicked), this,
-          &ConnectDialog::onRateChanged);
+  refreshButton->Bind(wxEVT_BUTTON, &ConnectDialog::onRefresh, this);
+  tryButton->Bind(wxEVT_BUTTON, &ConnectDialog::onTest, this);
+  connectButton->Bind(wxEVT_BUTTON, &ConnectDialog::onConnect, this);
 }
 
-void ConnectDialog::onRateChanged(int id) {
-  // This slot is called when a radio button is clicked.
-  // We will save all settings when "Connect" or "Test" is clicked, or on
-  // accept. For immediate saving, you could call saveSettings here.
-  // MainWindow::settings->setRate(static_cast<Settings::Rate>(id));
-  // MainWindow::settings->save(); // Optional: save immediately
+void ConnectDialog::onRefresh(wxCommandEvent &) { populatePortsList(); }
+void ConnectDialog::onTest(wxCommandEvent &) { tryPort(); }
+void ConnectDialog::onConnect(wxCommandEvent &) {
+  tryPort();
+  if (m_check_ok) {
+    EndModal(wxID_OK);
+  } else {
+    if (serialPort) {
+      serialPort->close();
+      delete serialPort;
+      serialPort = nullptr;
+    }
+  }
 }
 
 void ConnectDialog::loadSettings() {
-  if (MainWindow::settings) {
-    // Load Beep settings
-    // Assuming QCheckBox* beepShort and beepDiode are members now, or find them
-    this->m_beep_short->setChecked(MainWindow::settings->getBeepShort());
-    this->m_beep_diode->setChecked(MainWindow::settings->getBeepDiode());
-    this->m_short_threshold->setText(
-        QString::number(MainWindow::settings->getBeepResistance()));
-
-    // Load Rate
-    Settings::Rate currentRate = MainWindow::settings->getRate();
-    if (currentRate == Settings::Rate::SLOW) {
-      slowRateButton->setChecked(true);
-    } else if (currentRate == Settings::Rate::MEDIUM) {
-      mediumRateButton->setChecked(true);
-    } else {
-      // Default to FAST
-      fastRateButton->setChecked(true);
-    }
+  if (!m_settings) {
+    return;
+  }
+  m_beep_short->SetValue(m_settings->getBeepShort());
+  m_beep_diode->SetValue(m_settings->getBeepDiode());
+  m_short_threshold->SetValue(std::to_string(m_settings->getBeepResistance()));
+  switch (m_settings->getRate()) {
+  case Settings::Rate::SLOW:
+    m_rateBox->SetSelection(0);
+    break;
+  case Settings::Rate::MEDIUM:
+    m_rateBox->SetSelection(1);
+    break;
+  case Settings::Rate::FAST:
+  default:
+    m_rateBox->SetSelection(2);
+    break;
   }
 }
 
 void ConnectDialog::saveSettings() {
-  if (MainWindow::settings) {
-    MainWindow::settings->setBeepShort(m_beep_short->isChecked());
-    MainWindow::settings->setBeepDiode(m_beep_diode->isChecked());
-    MainWindow::settings->setBeepResistance(m_short_threshold->text().toInt());
-
-    // Save Rate
-    int selectedRateId = rateButtonGroup->checkedId();
-    if (selectedRateId != -1) {
-      // -1 if no button is checked
-      MainWindow::settings->setRate(
-          static_cast<Settings::Rate>(selectedRateId));
-    }
-    MainWindow::settings->save();
-  }
-}
-
-void ConnectDialog::populatePortsList() const {
-  portComboBox->clear();
-  const auto serialPortInfos = QSerialPortInfo::availablePorts();
-  if (serialPortInfos.isEmpty()) {
-    statusLabel->setText("No serial ports found");
-    statusLabel->setStyleSheet("QLabel { color: red; }"); // More visible
-    connectButton->setEnabled(false);
+  if (!m_settings) {
     return;
   }
-  for (const QSerialPortInfo &portInfo : serialPortInfos) {
-    QString portDescription = portInfo.portName();
-    if (!portInfo.description().isEmpty()) {
-      portDescription += " - " + portInfo.description();
-    }
-    if (!portInfo.manufacturer().isEmpty()) {
-      portDescription += " (" + portInfo.manufacturer() + ")";
-    }
-    portComboBox->addItem(portDescription, portInfo.portName());
+  m_settings->setBeepShort(m_beep_short->GetValue());
+  m_settings->setBeepDiode(m_beep_diode->GetValue());
+  try {
+    m_settings->setBeepResistance(
+        std::stoi(m_short_threshold->GetValue().ToStdString()));
+  } catch (...) {
+    m_settings->setBeepResistance(0);
   }
-  statusLabel->setText("Select a port and click Connect/Test.");
-  statusLabel->setStyleSheet("QLabel { color: gray; }");
-  connectButton->setEnabled(true);
+  switch (m_rateBox->GetSelection()) {
+  case 0:
+    m_settings->setRate(Settings::Rate::SLOW);
+    break;
+  case 1:
+    m_settings->setRate(Settings::Rate::MEDIUM);
+    break;
+  default:
+    m_settings->setRate(Settings::Rate::FAST);
+    break;
+  }
+  m_settings->save();
 }
 
-void ConnectDialog::refreshPorts() const { populatePortsList(); }
-
-bool ConnectDialog::configureSerialPort(const QString &device) {
-  if (serialPort) {
-    delete serialPort;
+void ConnectDialog::populatePortsList() {
+  portComboBox->Clear();
+  const auto ports = EnumerateSerialPorts();
+  if (ports.empty()) {
+    SetStatus(statusLabel, "No serial ports found", *wxRED);
+    connectButton->Enable(false);
+    return;
   }
-  serialPort = new QSerialPort(this);
+  for (const auto &port : ports) {
+    std::string label = port.portName;
+    if (!port.description.empty()) {
+      label += " - " + port.description;
+    }
+    if (!port.manufacturer.empty()) {
+      label += " (" + port.manufacturer + ")";
+    }
+    portComboBox->Append(wxString::FromUTF8(label.c_str()),
+                         new wxStringClientData(port.portName));
+  }
+  portComboBox->SetSelection(0);
+  SetStatus(statusLabel, "Select a port and click Connect/Test.", *wxLIGHT_GREY);
+  connectButton->Enable(true);
+}
 
-  serialPort->setPortName(device);
-  serialPort->setBaudRate(QSerialPort::Baud115200); // Typical for SCPI devices
-  serialPort->setDataBits(QSerialPort::Data8);
-  serialPort->setParity(QSerialPort::NoParity);
-  serialPort->setStopBits(QSerialPort::OneStop);
-  serialPort->setFlowControl(QSerialPort::NoFlowControl);
-
-  // Add more verbose error handling
-  if (!serialPort->open(QIODevice::ReadWrite)) {
-    qDebug() << "Failed to open serial port:" << serialPort->errorString();
+bool ConnectDialog::configureSerialPort(const std::string &device) {
+  delete serialPort;
+  serialPort = new SerialPort(device);
+  if (!serialPort->open()) {
+    std::cerr << "Failed to open serial port: " << serialPort->errorString() << "\n";
     return false;
   }
-
-  // Configure timeouts
-  serialPort->setReadBufferSize(1024); // Increase read buffer size
-
   return true;
 }
 
-bool ConnectDialog::tryPortByName(const QString &portName) {
+bool ConnectDialog::tryPortByName(const std::string &portName) {
   configureSerialPort(portName);
   saveSettings(); // Save settings before trying the port
   tryConfiguredPort();
@@ -225,115 +202,84 @@ bool ConnectDialog::tryPortByName(const QString &portName) {
 }
 
 void ConnectDialog::tryPort() {
-  if (portComboBox->currentIndex() == -1) {
-    statusLabel->setText("No serial port selected.");
-    statusLabel->setStyleSheet("QLabel { color: red; }");
+  if (portComboBox->GetSelection() == wxNOT_FOUND) {
+    SetStatus(statusLabel, "No serial port selected.", *wxRED);
     m_check_ok = false;
     return;
   }
-  configureSerialPort(portComboBox->currentData().toString());
+  configureSerialPort(getSelectedPort());
   saveSettings(); // Save settings before trying the port
   tryConfiguredPort();
 }
 
 void ConnectDialog::tryConfiguredPort() {
   if (!serialPort) {
-    // Should not happen if configureSerialPort was called
-    statusLabel->setText("Serial port not initialized.");
-    statusLabel->setStyleSheet("QLabel { color: red; }");
+    SetStatus(statusLabel, "Serial port not initialized.", *wxRED);
     m_check_ok = false;
     return;
   }
   if (serialPort->isOpen()) {
     serialPort->close();
   }
-  if (!serialPort->open(QIODevice::ReadWrite)) {
-    statusLabel->setText("Could not open: " + serialPort->errorString());
-    statusLabel->setStyleSheet("QLabel { color: red; }");
-    // No need to delete serialPort here, configureSerialPort handles it or it's
-    // parented
+  if (!serialPort->open()) {
+    SetStatus(statusLabel, "Could not open: " + serialPort->errorString(), *wxRED);
     m_check_ok = false;
     return;
   }
 
-  statusLabel->setText("Testing communication...");
-  statusLabel->setStyleSheet("QLabel { color: blue; }"); // Indicate activity
+  SetStatus(statusLabel, "Testing communication...", *wxBLUE);
 
-  serialPort->write("*IDN?\n");
-  if (!serialPort->waitForBytesWritten(1000)) {
-    statusLabel->setText("Write timeout to " + serialPort->portName());
-    statusLabel->setStyleSheet("QLabel { color: red; }");
+  if (!serialPort->write("*IDN?\n") || !serialPort->waitForBytesWritten(1000)) {
+    SetStatus(statusLabel, "Write timeout to " + serialPort->portName(), *wxRED);
     serialPort->close();
     m_check_ok = false;
     return;
   }
   if (!serialPort->waitForReadyRead(2000)) {
-    // Increased timeout slightly
-    statusLabel->setText("Read timeout from " + serialPort->portName());
-    statusLabel->setStyleSheet("QLabel { color: red; }");
+    SetStatus(statusLabel, "Read timeout from " + serialPort->portName(), *wxRED);
     serialPort->close();
     m_check_ok = false;
     return;
   }
-  char buffer[1024] = {0}; // Initialize buffer
-  qint64 bytesRead = serialPort->readLine(buffer, sizeof(buffer) - 1);
-
-  if (bytesRead <= 0) {
-    statusLabel->setText("No response from " + serialPort->portName());
-    statusLabel->setStyleSheet("QLabel { color: red; }");
+  std::string line;
+  if (!serialPort->readLine(line, 2000) || line.empty()) {
+    SetStatus(statusLabel, "No response from " + serialPort->portName(), *wxRED);
     serialPort->close();
     m_check_ok = false;
     return;
   }
 
-  const QString input(buffer);
-  QStringList parts = input.trimmed().split(','); // Trim whitespace
-
+  const auto parts = SplitComma(line);
   if (parts.size() < 2) {
-    // Check for at least model (often 4 parts: Manufacturer,Model,SN,Firmware)
-    statusLabel->setText("Invalid response: " +
-                         input.left(50)); // Show part of response
-    statusLabel->setStyleSheet("QLabel { color: red; }");
+    SetStatus(statusLabel, "Invalid response: " + line.substr(0, 50), *wxRED);
     serialPort->close();
     m_check_ok = false;
     return;
   }
-  const QString model = parts.value(1, "Unknown Model").trimmed();
-  const QString version = parts.value(3, "Unknown Fw").trimmed();
+  const std::string model = parts[1];
+  const std::string version = parts.size() > 3 ? parts[3] : "Unknown Fw";
 
-  statusLabel->setText("Connected: " + model + " (FW: " + version + ")");
-  statusLabel->setStyleSheet("QLabel { color: green; }");
+  SetStatus(statusLabel, "Connected: " + model + " (FW: " + version + ")",
+            wxColour(0, 128, 0));
   m_check_ok = true;
-  // Do not close the port here if the test is successful and it's intended to
-  // be used by "Connect"
+  // The port stays open for the caller (MainWindow) via getConfiguredSerialPort().
 }
 
-void ConnectDialog::connectToPort() {
-  tryPort();
-  if (m_check_ok) {
-    accept();
-  } else {
-    if (serialPort) {
-      if (serialPort->isOpen()) {
-        serialPort->close();
-      }
-      delete serialPort;
-      serialPort = nullptr;
-    }
+std::string ConnectDialog::getSelectedPort() const {
+  const int sel = portComboBox->GetSelection();
+  if (sel == wxNOT_FOUND) {
+    return {};
   }
+  auto *data = static_cast<wxStringClientData *>(portComboBox->GetClientObject(sel));
+  return data ? data->GetData().ToStdString() : std::string();
 }
 
-QString ConnectDialog::getSelectedPort() const {
-  if (portComboBox->currentIndex() == -1) {
-    return QString();
+SerialPort *ConnectDialog::getConfiguredSerialPort() {
+  if (!m_check_ok || !serialPort) {
+    return nullptr;
   }
-  return portComboBox->currentData().toString();
-}
-
-QSerialPort *ConnectDialog::getConfiguredSerialPort() const {
-  // The serialPort member is configured in tryPort/tryPortByName
-  // It's up to the caller (MainWindow) to manage this port after the dialog is
-  // accepted. If m_check_ok is true, serialPort should be valid and potentially
-  // open.
-  return m_check_ok ? serialPort : nullptr;
+  SerialPort *port = serialPort;
+  serialPort = nullptr;
+  m_check_ok = false;
+  return port;
 }

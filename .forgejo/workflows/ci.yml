@@ -41,22 +41,19 @@ jobs:
         include:
           - distro: ubuntu22
             image: ghcr.io/catthehacker/ubuntu:act-22.04
-            serialport_package: libqt6serialport6-dev
           - distro: debian-trixie
             image: node:24-trixie
-            serialport_package: qt6-serialport-dev
     container: ${{ matrix.image }}
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v6
+      - name: Init wxWidgets submodule
+        run: git submodule update --init --depth 1 --recursive third_party/wxwidgets
       - name: Install build dependencies
-        env:
-          SERIALPORT_PACKAGE: ${{ matrix.serialport_package }}
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build qt6-base-dev "$SERIALPORT_PACKAGE" \
-            libgl1-mesa-dev libxkbcommon-x11-0 libicu-dev \
-            libdouble-conversion-dev libpcre2-16-0
+            build-essential cmake ninja-build pkg-config \
+            libgtk-3-dev libgl1-mesa-dev
       - name: Configure and build
         env:
           APP_VERSION: ${{ needs.plan.outputs.version }}
@@ -94,19 +91,9 @@ jobs:
             fi
           done
       - uses: https://data.forgejo.org/actions/checkout@v6
-      - name: Install Qt 6.9.2
+      - name: Init wxWidgets submodule
         shell: bash
-        run: |
-          ci_tmp="${RUNNER_TEMP:-$PWD/.ci-tmp}"
-          mkdir -p "$ci_tmp"
-          python3 -m venv "$ci_tmp/aqt-venv"
-          "$ci_tmp/aqt-venv/bin/python" -m pip install 'aqtinstall==3.3.*'
-          "$ci_tmp/aqt-venv/bin/python" -m aqt install-qt mac desktop 6.9.2 clang_64 \
-            --outputdir "$ci_tmp/Qt" --modules qtserialport
-          qt_root="$ci_tmp/Qt/6.9.2/macos"
-          test -x "$qt_root/bin/macdeployqt"
-          printf '%s\n' "$qt_root/bin" >> "$GITHUB_PATH"
-          printf 'QT_ROOT_DIR=%s\n' "$qt_root" >> "$GITHUB_ENV"
+        run: git submodule update --init --depth 1 --recursive third_party/wxwidgets
       - name: Import signing certificate
         if: forgejo.ref == 'refs/heads/main'
         uses: https://github.com/Apple-Actions/import-codesign-certs@v7
@@ -119,10 +106,9 @@ jobs:
           APP_VERSION: ${{ needs.plan.outputs.version }}
         run: |
           cmake -S . -B build -G 'Unix Makefiles' -DCMAKE_BUILD_TYPE=Release \
-            "-DCMAKE_PREFIX_PATH=$QT_ROOT_DIR" \
             "-DAPP_VERSION=$APP_VERSION" '-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64'
           cmake --build build --parallel 2
-      - name: Deploy Qt and sign
+      - name: Sign app bundle
         shell: bash
         env:
           APPLE_SIGNING_ID: ${{ vars.APPLE_SIGNING_ID }}
@@ -132,13 +118,10 @@ jobs:
           if [[ -d build/owon1041.app && ! -d "$app" ]]; then
             mv build/owon1041.app "$app"
           fi
-          args=()
           if [[ "$SIGN_RELEASE" == true ]]; then
             test -n "$APPLE_SIGNING_ID"
-            args+=("-sign-for-notarization=Developer ID Application: $APPLE_SIGNING_ID")
-          fi
-          macdeployqt "$app" -always-overwrite "${args[@]}"
-          if [[ "$SIGN_RELEASE" == true ]]; then
+            codesign --deep --force --options runtime \
+              --sign "Developer ID Application: $APPLE_SIGNING_ID" "$app"
             codesign --verify --deep --strict --verbose=2 "$app"
           fi
       - name: Notarize signed app

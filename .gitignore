@@ -1,4 +1,7 @@
 *~
+/build/
+/build-*/
+cmake-build-*/
 .fuse_hidden*
 .directory
 .Trash-*
