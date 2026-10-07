@@ -126,7 +126,7 @@ async function ensureRelease(apiBase, ownerRepo, token, result, gh = false) {
 
 function releaseFiles(assetDir) {
   const files = readdirSync(assetDir).filter(file => /\.(?:deb|dmg)$/.test(file)).sort();
-  const expected = ['debian-trixie.deb', 'ubuntu22.deb', 'macos-universal.dmg'];
+  const expected = ['debian-trixie.deb', 'ubuntu24.deb', 'macos-universal.dmg'];
   if (files.length !== expected.length || expected.some(suffix => !files.some(file => file.endsWith(suffix)))) {
     throw new Error('Release must contain Ubuntu, Debian, and macOS universal packages');
   }
