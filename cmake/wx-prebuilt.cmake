@@ -209,3 +209,30 @@ set(OWON_WX_LIBS "${_wx_joined_libs}")
 unset(_wx_joined_libs)
 unset(_wx_lib_i)
 unset(_wx_libs_n)
+# The prebuilt bakes the builder's Xcode SDK paths
+# (.../MacOSX.sdk/usr/lib/*.tbd) into --libs, but runners may have Xcode
+# installed elsewhere. These are all system libs, so link them by name.
+set(_wx_remapped_libs)
+foreach(_wx_lib_item IN LISTS OWON_WX_LIBS)
+    if(_wx_lib_item MATCHES "^(.*/)?usr/lib/lib([^/]+)\\.tbd$")
+        list(APPEND _wx_remapped_libs "-l${CMAKE_MATCH_2}")
+    else()
+        list(APPEND _wx_remapped_libs "${_wx_lib_item}")
+    endif()
+endforeach()
+set(OWON_WX_LIBS "${_wx_remapped_libs}")
+unset(_wx_remapped_libs)
+# The trixie-built wx links -lwebpdecoder, but some distros (e.g. Ubuntu
+# 22.04) folded the decoder back into libwebp and ship no such library.
+# Drop it when the toolchain cannot resolve it; -lwebp (also on the link
+# line) provides the same symbols.
+list(FIND OWON_WX_LIBS "-lwebpdecoder" _wx_has_webpdecoder)
+if(NOT _wx_has_webpdecoder EQUAL -1)
+    find_library(_wx_webpdecoder_lib NAMES webpdecoder)
+    if(_wx_webpdecoder_lib MATCHES "-NOTFOUND$")
+        list(REMOVE_ITEM OWON_WX_LIBS "-lwebpdecoder")
+        message(STATUS "libwebpdecoder not found, linking decoder symbols via libwebp")
+    endif()
+    unset(_wx_webpdecoder_lib)
+endif()
+unset(_wx_has_webpdecoder)
